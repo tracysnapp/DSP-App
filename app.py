@@ -26,7 +26,7 @@ from engine import (
 
 from views.dispatch_roster import render_dispatch_roster_tab
 from views.scheduler_view import render_scheduler_tab
-from views.fleet_phones_view import render_fleet_phones_tab
+from views.fleet_phones_view import render_fleet_tab
 from views.scorecards import render_scorecards_tab
 
 # Page Configuration
@@ -47,7 +47,7 @@ def get_cookie_manager():
 cookie_manager = get_cookie_manager()
 all_cookies = cookie_manager.get_all()
 
-# CRITICAL FIX: Hold execution until cookie manager component mounts in browser
+# Hold execution until browser cookie manager mounts
 if all_cookies is None:
     st.stop()
 
@@ -202,7 +202,7 @@ with tab_scheduler:
     render_scheduler_tab()
 
 with tab_fleet:
-    render_fleet_phones_tab()
+    render_fleet_tab()
 
 with tab_scorecard:
     render_scorecards_tab()
