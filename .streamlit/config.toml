@@ -1,0 +1,9 @@
+[server]
+enableCORS = false
+enableXsrfProtection = false
+maxUploadSize = 200
+pingInterval = 10
+pingTimeout = 120
+
+[browser]
+gatherUsageStats = false
