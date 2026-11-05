@@ -352,7 +352,7 @@ def load_local_incidents_log():
     return df.copy() if not df.empty else pd.DataFrame(columns=["Date", "Driver Name", "Severity", "Category", "Infraction / Detail", "Van Bumper", "Logged By", "Notes"])
 
 def save_driver_incident(driver_name, severity, category, infraction_detail, van_bumper, logged_by, notes):
-    """Appends a new driving or behavior incident record atomically to storage."""
+    """Appends a new driving or behavior incident record atomically to storage and clears cache."""
     incidents_df = load_local_incidents_log()
     new_record = {
         "Date": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M"),
@@ -366,4 +366,8 @@ def save_driver_incident(driver_name, severity, category, infraction_detail, van
     }
     updated_df = pd.concat([incidents_df, pd.DataFrame([new_record])], ignore_index=True)
     safe_save_dataframe(updated_df, INCIDENTS_LOG_PATH)
+    
+    # Invalidate cache so UI reads updated log immediately
+    load_local_incidents_log.clear()
+    
     return updated_df
