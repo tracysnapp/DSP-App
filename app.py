@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import extra_streamlit_components as stx
 
 from engine import (
     authenticate_user, cleanup_old_snapshots,
@@ -34,12 +35,27 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# AUTHENTICATION GUARD
+# AUTHENTICATION GUARD WITH COOKIE PERSISTENCE
 # ---------------------------------------------------------
+@st.cache_resource
+def get_cookie_manager():
+    return stx.get_cookie_manager()
+
+cookie_manager = get_cookie_manager()
+
 if 'authenticated' not in st.session_state:
     st.session_state['authenticated'] = False
     st.session_state['user_role'] = None
     st.session_state['user_name'] = None
+
+# Attempt cookie-based auto-login if session state was cleared by container restart
+auth_cookie_user = cookie_manager.get(cookie="jna_auth_user")
+auth_cookie_role = cookie_manager.get(cookie="jna_auth_role")
+
+if auth_cookie_user and auth_cookie_role and not st.session_state['authenticated']:
+    st.session_state['authenticated'] = True
+    st.session_state['user_name'] = auth_cookie_user
+    st.session_state['user_role'] = auth_cookie_role
 
 if not st.session_state['authenticated']:
     st.title("🚛 JNA Logistics Command Center")
@@ -51,12 +67,19 @@ if not st.session_state['authenticated']:
             st.markdown("### Dispatch Portal Sign-In")
             u_input = st.text_input("Username")
             p_input = st.text_input("Password", type="password")
+            remember_me = st.checkbox("Keep me signed in on this browser (7 days)", value=True)
+            
             if st.form_submit_button("Sign In to Workspace", use_container_width=True, type="primary"):
                 is_auth, role, name = authenticate_user(u_input, p_input)
                 if is_auth:
                     st.session_state['authenticated'] = True
                     st.session_state['user_role'] = role
                     st.session_state['user_name'] = name
+                    
+                    if remember_me:
+                        cookie_manager.set("jna_auth_user", name, key="set_user", max_age=604800)
+                        cookie_manager.set("jna_auth_role", role, key="set_role", max_age=604800)
+                    
                     st.rerun()
                 else:
                     st.error("Invalid username or password.")
@@ -109,7 +132,11 @@ st.sidebar.markdown(f"👤 **User:** {st.session_state['user_name']}")
 st.sidebar.markdown(f"🛡️ **Access Level:** `{user_role}`")
 
 if st.sidebar.button("🚪 Sign Out", use_container_width=True):
+    cookie_manager.delete("jna_auth_user", key="del_user")
+    cookie_manager.delete("jna_auth_role", key="del_role")
     st.session_state['authenticated'] = False
+    st.session_state['user_role'] = None
+    st.session_state['user_name'] = None
     st.rerun()
 
 st.sidebar.markdown("---")
