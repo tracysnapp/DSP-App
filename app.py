@@ -29,6 +29,7 @@ from views.dispatch_roster import render_dispatch_roster_tab
 from views.scheduler_view import render_scheduler_tab
 from views.fleet_phones_view import render_fleet_tab
 from views.scorecards_view import render_scorecards_tab
+from views.closing_checklist import render_closing_checklist_tab
 
 # Page Configuration
 st.set_page_config(
@@ -186,8 +187,9 @@ with st.sidebar:
 # ---------------------------------------------------------
 st.title("🚛 JNA Daily Operations & Command Center")
 
-tab_roster, tab_scheduler, tab_fleet, tab_scorecard = st.tabs([
+tab_roster, tab_closing, tab_scheduler, tab_fleet, tab_scorecard = st.tabs([
     "📋 Route Assignment & Roster",
+    "📝 Daily Closing & Debrief Checklist",
     "📅 Master Driver Schedule",
     "🚐 Fleet & Phone Tracker",
     "📊 Driver Performance Scorecards"
@@ -195,6 +197,9 @@ tab_roster, tab_scheduler, tab_fleet, tab_scorecard = st.tabs([
 
 with tab_roster:
     render_dispatch_roster_tab(cortex_file, update_live_roster)
+
+with tab_closing:
+    render_closing_checklist_tab()
 
 with tab_scheduler:
     render_scheduler_tab()
