@@ -12,7 +12,14 @@ from modules.roster import (
     condense_service_type
 )
 from modules.fleet import find_matching_phone, process_driver_data
-from engine import MASTER_FLEET_PATH, MASTER_DRIVERS_PATH, save_snapshot_file, safe_save_dataframe, log_dispatch_action
+from engine import (
+    MASTER_FLEET_PATH, 
+    MASTER_DRIVERS_PATH, 
+    save_snapshot_file, 
+    safe_save_dataframe, 
+    log_dispatch_action,
+    load_local_drivers
+)
 
 def normalize_name(name_str):
     """
@@ -141,6 +148,10 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
                             updated_drivers = pd.concat([drivers_df, pd.DataFrame(new_rows)], ignore_index=True)
                             st.session_state['drivers_df'] = process_driver_data(updated_drivers)
                             safe_save_dataframe(st.session_state['drivers_df'], MASTER_DRIVERS_PATH)
+                            
+                            # Invalidate cached drivers dataset so all UI views refresh immediately
+                            load_local_drivers.clear()
+                            
                             log_dispatch_action(f"Added new drivers {new_drivers} to Master Directory from Cortex.", username=active_user)
                             st.success(f"Added {len(new_drivers)} driver(s) to Master Directory!")
                             st.rerun()
