@@ -9,14 +9,20 @@ from google.cloud import storage
 
 try:
     from dotenv import load_dotenv
-    load_dotenv()
+    load_dotenv(override=False)
 except ImportError:
     pass
 
 # ---------------------------------------------------------
 # CONFIGURATION & STORAGE ABSTRACTION
 # ---------------------------------------------------------
-STORAGE_MODE = os.getenv("STORAGE_MODE", "CLOUD").upper()
+# Auto-detect Cloud Run container runtime or fall back to environment variable
+K_SERVICE = os.getenv("K_SERVICE")
+if K_SERVICE:
+    STORAGE_MODE = "CLOUD"
+else:
+    STORAGE_MODE = os.getenv("STORAGE_MODE", "CLOUD").upper()
+
 GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "dsp-app-storage")
 
 # Storage Object Paths / Keys inside GCS or local disk
@@ -187,7 +193,7 @@ def cleanup_old_snapshots(days_to_keep=30):
     if STORAGE_MODE == "CLOUD":
         try:
             bucket = get_gcs_bucket()
-            prefix = f"{HISTORY_DIR}/"
+            prefix = f"{HISTORY_DIR}/" if not HISTORY_DIR.endswith('/') else HISTORY_DIR
             blobs = bucket.list_blobs(prefix=prefix)
             for blob in blobs:
                 if (blob.name.endswith(".xlsx") and ("roster_" in blob.name or "closing_checklist_" in blob.name)):
@@ -231,7 +237,7 @@ def list_snapshot_files():
     if STORAGE_MODE == "CLOUD":
         try:
             bucket = get_gcs_bucket()
-            prefix = f"{HISTORY_DIR}/"
+            prefix = f"{HISTORY_DIR}/" if not HISTORY_DIR.endswith('/') else HISTORY_DIR
             blobs = bucket.list_blobs(prefix=prefix)
             files = []
             for blob in blobs:
