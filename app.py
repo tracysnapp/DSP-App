@@ -6,8 +6,7 @@ from engine import (
     authenticate_user, cleanup_old_snapshots,
     save_snapshot_file, list_snapshot_files, load_snapshot_file,
     load_local_fleet, load_local_phones, load_local_drivers,
-    load_local_schedule, load_local_scorecards, load_local_access_codes,
-    get_gcs_bucket, GCS_BUCKET_NAME, STORAGE_MODE
+    load_local_schedule, load_local_scorecards, load_local_access_codes
 )
 from modules.roster import update_closing_checklist_assignments
 
@@ -39,7 +38,6 @@ st.markdown("""
 # ---------------------------------------------------------
 @st.cache_resource
 def get_cookie_manager():
-    # Instantiates stx.CookieManager() directly to avoid AttributeError
     return stx.CookieManager()
 
 cookie_manager = get_cookie_manager()
@@ -163,31 +161,18 @@ if active_portal == "🚚 Dispatch Operations Portal":
         selected_history = st.sidebar.selectbox("Load Previous Snapshot", options=["Select a date/time..."] + history_files)
         if selected_history != "Select a date/time..." and st.sidebar.button("📂 Load Historical Roster"):
             hist_df = load_snapshot_file(selected_history)
-            if not hist_df.empty and 'Helper' not in hist_df.columns and 'Driver' in hist_df.columns:
-                hist_df.insert(hist_df.columns.get_loc('Driver') + 1, 'Helper', '')
-            update_live_roster(hist_df, toast_msg=f"Loaded snapshot: {selected_history}")
-            st.rerun()
+            if not hist_df.empty:
+                hist_df = hist_df.fillna("").replace(["nan", "NaN", "None", "<NA>"], "")
+                if 'Helper' not in hist_df.columns and 'Driver' in hist_df.columns:
+                    hist_df.insert(hist_df.columns.get_loc('Driver') + 1, 'Helper', '')
+                update_live_roster(hist_df, toast_msg=f"Loaded snapshot: {selected_history}")
+                st.rerun()
     else:
         st.sidebar.caption("⚠️ No snapshots found in storage.")
 else:
     cortex_file = None
 
 st.sidebar.markdown("---")
-
-# ---------------------------------------------------------
-# GCS LIVE STORAGE DEBUGGER (TEMPORARY DIAGNOSTIC)
-# ---------------------------------------------------------
-with st.sidebar.expander("🔍 GCS Storage Debugger"):
-    st.write(f"**Storage Mode:** `{STORAGE_MODE}`")
-    st.write(f"**Target Bucket:** `{GCS_BUCKET_NAME}`")
-    try:
-        bucket = get_gcs_bucket()
-        blobs = list(bucket.list_blobs())
-        blob_names = [b.name for b in blobs]
-        st.write(f"**Total Bucket Objects:** {len(blob_names)}")
-        st.json(blob_names if blob_names else ["Bucket is empty"])
-    except Exception as e:
-        st.error(f"GCS Connection Error: {e}")
 
 # ---------------------------------------------------------
 # PORTAL TAB RENDERING
