@@ -91,8 +91,18 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
         active_count = len(active_fleet_df)
         
         if 'current_roster' in st.session_state and not st.session_state['current_roster'].empty:
-            r_col1, r_col2 = st.columns([4, 1])
+            r_col1, r_col2, r_col3 = st.columns([3, 1, 1])
+            
             with r_col2:
+                if st.button("💾 Save Updates", type="primary", use_container_width=True):
+                    update_live_roster_fn(
+                        st.session_state['current_roster'], 
+                        toast_msg="Roster and snapshot saved to Cloud Storage!"
+                    )
+                    log_dispatch_action("Manually saved active roster updates and GCS snapshot.", username=active_user)
+                    st.rerun()
+
+            with r_col3:
                 if st.button("⚠️ Reset Today's Roster", type="secondary", use_container_width=True):
                     st.session_state['current_roster'] = pd.DataFrame()
                     st.session_state['closing_df'] = pd.DataFrame()
@@ -259,7 +269,6 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
                                 van_matches = fleet[fleet['vehicleName'].astype(str).str.strip() == str(new_van_sel).strip()] if 'vehicleName' in fleet.columns else pd.DataFrame()
                                 sel_st = str(van_matches.iloc[0].get('ST', 'M')).strip() if not van_matches.empty else 'M'
                                 
-                                # FIXED: Explicit check to guard phone lookup on unassigned vans
                                 if str(new_van_sel).strip() != "UNASSIGNED":
                                     pid, pnum = find_matching_phone(new_van_sel, phone_map)
                                 else:
@@ -294,7 +303,6 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
                                 van_matches = fleet[fleet['vehicleName'].astype(str).str.strip() == str(selected_swp_van).strip()] if 'vehicleName' in fleet.columns else pd.DataFrame()
                                 sel_st = str(van_matches.iloc[0].get('ST', 'M')).strip() if not van_matches.empty else 'M'
                                 
-                                # FIXED: Explicit check to guard phone lookup on unassigned vans
                                 if str(selected_swp_van).strip() != "UNASSIGNED":
                                     pid, pnum = find_matching_phone(selected_swp_van, phone_map)
                                 else:
@@ -409,7 +417,6 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
                             else:
                                 chosen_van = "UNASSIGNED"
 
-                            # FIXED: Guard phone lookup logic on unassigned or empty van selections
                             if chosen_van != "UNASSIGNED" and chosen_van != "NO VANS AVAILABLE":
                                 van_matches = fleet[fleet['vehicleName'].astype(str).str.strip() == str(chosen_van).strip()] if 'vehicleName' in fleet.columns else pd.DataFrame()
                                 sel_st = str(van_matches.iloc[0].get('ST', 'M')).strip() if not van_matches.empty else 'M'
@@ -516,7 +523,6 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
                 assigned_phones = [str(p).strip() for p in st.session_state['current_roster']['Phone ID'].dropna().unique() if str(p).strip()]
                 unassigned_phones = [p for p in active_phones if p not in assigned_phones]
                 
-                # Combine unassigned phones with already assigned phones to ensure valid state
                 phone_options = [""] + sorted(list(set(unassigned_phones + assigned_phones)))
 
                 def on_roster_change():
