@@ -257,9 +257,15 @@ def list_snapshot_files():
     return []
 
 def load_snapshot_file(filename):
+    """Loads a historical roster snapshot from storage and sanitizes NaN values for clean rendering."""
     blob_path = f"{HISTORY_DIR}/{filename}"
     df = load_dataframe_auto(blob_path)
-    return df.astype(str) if not df.empty else df
+    if not df.empty:
+        # Fill missing values with empty strings first, then convert to str
+        df_clean = df.fillna("").astype(str)
+        # Replace string representations of NaN / null values with empty strings
+        return df_clean.replace(["nan", "NaN", "None", "<NA>"], "")
+    return df
 
 def process_access_data(access_df):
     if access_df is None or access_df.empty:
