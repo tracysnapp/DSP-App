@@ -40,11 +40,8 @@ st.set_page_config(
 # ---------------------------------------------------------
 # PERSISTENT COOKIE & SESSION AUTHENTICATION
 # ---------------------------------------------------------
-@st.cache_resource
-def get_cookie_manager():
-    return stx.CookieManager()
-
-cookie_manager = get_cookie_manager()
+# Instantiate CookieManager directly without @st.cache_resource
+cookie_manager = stx.CookieManager()
 all_cookies = cookie_manager.get_all()
 
 # Hold execution until browser cookie manager mounts over WebSockets
