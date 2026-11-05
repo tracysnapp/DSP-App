@@ -27,7 +27,7 @@ from engine import (
 from views.dispatch_roster import render_dispatch_roster_tab
 from views.scheduler_view import render_scheduler_tab
 from views.fleet_phones_view import render_fleet_tab
-from views.scorecards import render_scorecards_tab
+from views.scorecards_view import render_scorecards_tab
 
 # Page Configuration
 st.set_page_config(
@@ -47,7 +47,7 @@ def get_cookie_manager():
 cookie_manager = get_cookie_manager()
 all_cookies = cookie_manager.get_all()
 
-# Hold execution until browser cookie manager mounts
+# Hold execution until browser cookie manager mounts over WebSockets
 if all_cookies is None:
     st.stop()
 
