@@ -1,3 +1,4 @@
+import time
 import streamlit as st
 import pandas as pd
 import extra_streamlit_components as stx
@@ -36,25 +37,28 @@ st.markdown("""
 # ---------------------------------------------------------
 # AUTHENTICATION GUARD WITH COOKIE PERSISTENCE
 # ---------------------------------------------------------
-def get_cookie_manager():
-    return stx.CookieManager()
-
-cookie_manager = get_cookie_manager()
+cookie_manager = stx.CookieManager()
 
 if 'authenticated' not in st.session_state:
     st.session_state['authenticated'] = False
     st.session_state['user_role'] = None
     st.session_state['user_name'] = None
 
-# Restore active session from browser cookies after cold starts or tab resets
-auth_cookie_user = cookie_manager.get(cookie="jna_auth_user")
-auth_cookie_role = cookie_manager.get(cookie="jna_auth_role")
+# Retrieve all cookies to verify component readiness
+all_cookies = cookie_manager.get_all()
 
-if auth_cookie_user and auth_cookie_role and not st.session_state['authenticated']:
-    st.session_state['authenticated'] = True
-    st.session_state['user_name'] = auth_cookie_user
-    st.session_state['user_role'] = auth_cookie_role
+# If session is lost, attempt to read stored cookies
+if not st.session_state['authenticated']:
+    auth_cookie_user = cookie_manager.get(cookie="jna_auth_user")
+    auth_cookie_role = cookie_manager.get(cookie="jna_auth_role")
 
+    if auth_cookie_user and auth_cookie_role:
+        st.session_state['authenticated'] = True
+        st.session_state['user_name'] = auth_cookie_user
+        st.session_state['user_role'] = auth_cookie_role
+        st.rerun()
+
+# Render Login Form if unauthenticated
 if not st.session_state['authenticated']:
     st.title("🚛 JNA Logistics Command Center")
     st.subheader("🔒 User Authentication Required")
