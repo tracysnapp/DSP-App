@@ -39,7 +39,8 @@ st.markdown("""
 # ---------------------------------------------------------
 @st.cache_resource
 def get_cookie_manager():
-    return stx.get_cookie_manager()
+    # Instantiates stx.CookieManager() directly to avoid AttributeError
+    return stx.CookieManager()
 
 cookie_manager = get_cookie_manager()
 
@@ -48,7 +49,7 @@ if 'authenticated' not in st.session_state:
     st.session_state['user_role'] = None
     st.session_state['user_name'] = None
 
-# Attempt cookie-based auto-login if session state was cleared by container restart
+# Restore active session from browser cookies after cold starts or tab resets
 auth_cookie_user = cookie_manager.get(cookie="jna_auth_user")
 auth_cookie_role = cookie_manager.get(cookie="jna_auth_role")
 
