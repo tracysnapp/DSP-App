@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 
 from engine import (
-    authenticate_user, ensure_history_dir, cleanup_old_snapshots,
+    authenticate_user, cleanup_old_snapshots,
     save_snapshot_file, list_snapshot_files, load_snapshot_file,
     load_local_fleet, load_local_phones, load_local_drivers,
     load_local_schedule, load_local_scorecards, load_local_access_codes
@@ -69,14 +69,16 @@ def update_live_roster(new_roster_df, toast_msg="Roster updated successfully!"):
         return
     st.session_state['current_roster'] = new_roster_df
     update_closing_checklist_assignments(new_roster_df, st.session_state)
+    
+    # Save snapshot blob to GCS bucket via engine helper
     save_snapshot_file(new_roster_df, f"roster_{pd.Timestamp.now().strftime('%Y-%m-%d_%H%M')}.xlsx")
     if toast_msg:
         st.toast(toast_msg, icon="✅")
 
-# Ensure history directory and initialize cached data
-ensure_history_dir()
+# Clean up snapshots older than 30 days in GCS (Handled inside engine.py)
 cleanup_old_snapshots(days_to_keep=30)
 
+# Load master data files from GCS bucket on session cold start
 if 'fleet_df' not in st.session_state or st.session_state['fleet_df'] is None:
     st.session_state['fleet_df'] = load_local_fleet()
 
@@ -120,16 +122,18 @@ st.sidebar.markdown("---")
 
 if active_portal == "🚚 Dispatch Operations Portal":
     st.sidebar.header("📁 Daily Operations")
-    cortex_file = st.sidebar.file_uploader("Upload Today's Cortex Routes (.csv or .xlsx)", type=["csv", "xlsx"])
+    # Added 'xls' for broader Cortex file compatibility
+    cortex_file = st.sidebar.file_uploader("Upload Today's Cortex Routes (.csv, .xlsx, or .xls)", type=["csv", "xlsx", "xls"])
     st.sidebar.markdown("---")
     st.sidebar.header("📜 Roster History & Snapshots")
 
+    # Fetch blob objects from GCS bucket
     history_files = list_snapshot_files()
     if history_files:
         selected_history = st.sidebar.selectbox("Load Previous Snapshot", options=["Select a date/time..."] + history_files)
         if selected_history != "Select a date/time..." and st.sidebar.button("📂 Load Historical Roster"):
             hist_df = load_snapshot_file(selected_history)
-            if 'Helper' not in hist_df.columns:
+            if 'Helper' not in hist_df.columns and 'Driver' in hist_df.columns:
                 hist_df.insert(hist_df.columns.get_loc('Driver') + 1, 'Helper', '')
             update_live_roster(hist_df, toast_msg=f"Loaded snapshot: {selected_history}")
             st.rerun()
