@@ -4,7 +4,8 @@ from engine import (
     save_daily_closing_checklist, 
     log_dispatch_action,
     load_local_access_codes,
-    save_local_access_codes
+    safe_save_dataframe,
+    ACCESS_CODES_PATH
 )
 from modules.roster import update_closing_checklist_assignments
 
@@ -87,7 +88,8 @@ def render_closing_checklist_tab():
             )
             if st.button("💾 Save Access Codes", type="primary"):
                 st.session_state['access_codes_df'] = edited_access.copy()
-                save_local_access_codes(edited_access)
+                safe_save_dataframe(edited_access, ACCESS_CODES_PATH)
+                load_local_access_codes.clear()
                 log_dispatch_action("Updated Station Access & Gate Codes.", username=active_user)
                 st.toast("Access codes saved!", icon="🔑")
                 st.rerun()
