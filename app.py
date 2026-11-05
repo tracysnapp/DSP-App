@@ -20,6 +20,7 @@ from engine import (
     cleanup_old_snapshots,
     save_daily_closing_checklist,
     log_dispatch_action,
+    USER_CREDENTIALS,
     ADMIN_USER,
     DISPATCH_USER
 )
@@ -31,7 +32,7 @@ from views.scorecards_view import render_scorecards_tab
 
 # Page Configuration
 st.set_page_config(
-    page_title="DSP Command Center",
+    page_title="JNA Command Center",
     page_icon="🚛",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -40,7 +41,6 @@ st.set_page_config(
 # ---------------------------------------------------------
 # PERSISTENT COOKIE & SESSION AUTHENTICATION
 # ---------------------------------------------------------
-# Instantiate CookieManager directly without @st.cache_resource
 cookie_manager = stx.CookieManager()
 all_cookies = cookie_manager.get_all()
 
@@ -61,15 +61,16 @@ cookie_user = all_cookies.get('jna_auth_user')
 cookie_role = all_cookies.get('jna_auth_role')
 
 if cookie_user and cookie_role and not st.session_state['authenticated']:
-    st.session_state['authenticated'] = True
-    st.session_state['user_role'] = cookie_role
-    st.session_state['user_name'] = "Operations Manager" if cookie_role == "Admin" else "Dispatch Desk"
+    if cookie_user in USER_CREDENTIALS:
+        st.session_state['authenticated'] = True
+        st.session_state['user_role'] = cookie_role
+        st.session_state['user_name'] = USER_CREDENTIALS[cookie_user].get("name", cookie_user)
 
 # ---------------------------------------------------------
 # LOGIN INTERFACE
 # ---------------------------------------------------------
 if not st.session_state['authenticated']:
-    st.markdown("<h1 style='text-align: center;'>🚛 DSP Operational Command Center</h1>", unsafe_allow_html=True)
+    st.markdown("<h1 style='text-align: center;'>🚛 JNA Logistics Operational Command Center</h1>", unsafe_allow_html=True)
     st.markdown("<h3 style='text-align: center; color: gray;'>Station DDK6 Operations</h3>", unsafe_allow_html=True)
     st.markdown("---")
     
@@ -140,7 +141,7 @@ def update_live_roster(new_roster_df, toast_msg="Roster updated successfully!"):
 # SIDEBAR CONTROL PANEL
 # ---------------------------------------------------------
 with st.sidebar:
-    st.title("🚛 DDK6 Command Desk")
+    st.title("🚛 JNA Command Desk")
     st.caption(f"Logged in as: **{st.session_state.get('user_name', 'User')}** ({st.session_state.get('user_role', 'Role')})")
     
     if st.button("🚪 Sign Out", type="secondary", use_container_width=True):
@@ -183,7 +184,7 @@ with st.sidebar:
 # ---------------------------------------------------------
 # MAIN WORKSPACE TABS
 # ---------------------------------------------------------
-st.title("🚛 DSP Daily Operations & Command Center")
+st.title("🚛 JNA Daily Operations & Command Center")
 
 tab_roster, tab_scheduler, tab_fleet, tab_scorecard = st.tabs([
     "📋 Route Assignment & Roster",
