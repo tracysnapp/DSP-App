@@ -17,7 +17,7 @@ except ImportError:
 # CONFIGURATION & STORAGE ABSTRACTION
 # ---------------------------------------------------------
 STORAGE_MODE = os.getenv("STORAGE_MODE", "CLOUD").upper()
-GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "dsp-app-data")
+GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "dsp-app-storage")
 
 # Storage Object Paths / Keys inside GCS or local disk
 MASTER_FLEET_PATH = os.getenv("MASTER_FLEET_PATH", "master_fleet.xlsx")
