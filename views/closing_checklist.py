@@ -1,28 +1,53 @@
 import streamlit as st
 import pandas as pd
-import streamlit.components.v1 as components
-from engine import save_daily_closing_checklist, HISTORY_DIR, log_dispatch_action
-from modules.roster import update_closing_checklist_assignments, generate_printable_closing_html
+from engine import (
+    save_daily_closing_checklist, 
+    log_dispatch_action,
+    load_local_access_codes,
+    save_local_access_codes
+)
+from modules.roster import update_closing_checklist_assignments
 
 def render_closing_checklist_tab():
-    st.subheader("📝 End of Day Driver Closing & Debrief Checklist")
+    st.subheader("📝 Daily Closing & Debrief Checklist")
     
-    if 'current_roster' in st.session_state and not st.session_state['current_roster'].empty:
-        roster_df = st.session_state['current_roster'].copy().reset_index(drop=True)
-        active_user = st.session_state.get('user_name', 'Dispatcher')
-        
-        # FIXED: Reference 'Van' instead of 'Van Number' to avoid wiping live debrief data
-        if 'closing_df' not in st.session_state or st.session_state['closing_df'] is None or st.session_state['closing_df'].empty or "Van" not in st.session_state['closing_df'].columns:
-            update_closing_checklist_assignments(roster_df, st.session_state)
+    active_user = st.session_state.get('user_name', 'Dispatcher')
 
-        closing_data = st.session_state['closing_df'].copy()
+    if 'closing_df' not in st.session_state or st.session_state['closing_df'] is None or st.session_state['closing_df'].empty:
+        if 'current_roster' in st.session_state and not st.session_state['current_roster'].empty:
+            update_closing_checklist_assignments(st.session_state['current_roster'], st.session_state)
+        else:
+            st.session_state['closing_df'] = pd.DataFrame(columns=[
+                "Van", "Driver", "Route", "Phone ID", "Bag Returned", 
+                "Key Returned", "Phone Returned", "Gas Level", "Miles", "Debrief Notes", "Status"
+            ])
 
-        # DEBRIEF UNRETURNED EQUIPMENT AUDIT BANNER
-        unreturned_keys = len(closing_data[closing_data['Keys Returned'].astype(str).str.strip().str.upper().isin(['NO', 'FALSE', 'N'])])
-        unreturned_phones = len(closing_data[closing_data['Phone Returned'].astype(str).str.strip().str.upper().isin(['NO', 'FALSE', 'N'])])
+    closing_df = st.session_state['closing_df']
 
-        if unreturned_keys > 0 or unreturned_phones > 0:
-            st.warning(f"⚠️ **Debrief Equipment Audit Alert:** `{unreturned_keys}` Unreturned Key Set(s) | `{unreturned_phones}` Unreturned Device(s) logged!")
+    if not closing_df.empty:
+        c1, c2 = st.columns([3, 1])
+        with c1:
+            st.caption("Track return of equipment, gas level, and route debrief status.")
+        with c2:
+            if st.button("💾 Save Debrief Updates", type="primary", use_container_width=True):
+                save_daily_closing_checklist(st.session_state['closing_df'])
+                log_dispatch_action("Saved Daily Closing & Debrief Checklist state.", username=active_user)
+                st.toast("Closing checklist saved to disk & GCS!", icon="📝")
+                st.rerun()
+
+        closing_config = {
+            "Van": st.column_config.TextColumn("Van", disabled=True, width="small"),
+            "Driver": st.column_config.TextColumn("Driver", disabled=True, width="medium"),
+            "Route": st.column_config.TextColumn("Route", disabled=True, width="small"),
+            "Phone ID": st.column_config.TextColumn("Phone ID", disabled=True, width="small"),
+            "Bag Returned": st.column_config.CheckboxColumn("Bag Ret.", default=False, width="small"),
+            "Key Returned": st.column_config.CheckboxColumn("Key Ret.", default=False, width="small"),
+            "Phone Returned": st.column_config.CheckboxColumn("Phone Ret.", default=False, width="small"),
+            "Gas Level": st.column_config.SelectboxColumn("Gas Level", options=["Full", "3/4", "1/2", "1/4", "Empty"], required=True, width="small"),
+            "Miles": st.column_config.NumberColumn("End Miles", min_value=0, step=1, width="small"),
+            "Debrief Notes": st.column_config.TextColumn("Debrief Notes / Issues", width="large"),
+            "Status": st.column_config.SelectboxColumn("Status", options=["PENDING", "DEBRIEFED", "FLAGGED"], required=True, width="small")
+        }
 
         def on_closing_change():
             changes = st.session_state.get("closing_checklist_editor_state")
@@ -30,55 +55,42 @@ def render_closing_checklist_tab():
                 for row_idx, col_changes in changes.get("edited_rows", {}).items():
                     for col_name, new_val in col_changes.items():
                         st.session_state['closing_df'].at[row_idx, col_name] = new_val
-
-        # FIXED: Updated 'Van Number' column config key to 'Van'
-        closing_config = {
-            "Driver Name": st.column_config.TextColumn("Driver Name", width="medium", disabled=True),
-            "Van": st.column_config.TextColumn("Van", width="small", disabled=True),
-            "Clock out time": st.column_config.TextColumn("Clock out time", width="small"),
-            "DVIC Complete": st.column_config.SelectboxColumn("DVIC Complete", options=["YES", "NO"], width="small"),
-            "Damage?": st.column_config.SelectboxColumn("Damage?", options=["NO", "YES - NEW", "PRE-EXISTING"], width="small"),
-            "Cleaned?": st.column_config.SelectboxColumn("Cleaned?", options=["YES", "NO"], width="small"),
-            "Keys Returned": st.column_config.SelectboxColumn("Keys Returned", options=["YES", "NO"], width="small"),
-            "Phone Returned": st.column_config.SelectboxColumn("Phone Returned", options=["YES", "NO"], width="small"),
-            "Portable Charger": st.column_config.SelectboxColumn("Portable Charger", options=["YES", "NO", "N/A"], width="small"),
-            "Fuel Card Returned": st.column_config.SelectboxColumn("Fuel Card Returned", options=["YES", "NO"], width="small"),
-            "Fuel Level": st.column_config.SelectboxColumn("Fuel Level", options=["100%", "75%", "50%", "25%", "LOW"], width="small"),
-            "Packages/Returns Handled": st.column_config.TextColumn("Packages/Returns Handled", width="medium"),
-            "Remarks": st.column_config.TextColumn("Remarks", width="medium"),
-            "DA Signature": st.column_config.TextColumn("DA Signature", width="medium")
-        }
+                save_daily_closing_checklist(st.session_state['closing_df'])
 
         st.data_editor(
             st.session_state['closing_df'],
             column_config=closing_config,
             use_container_width=True,
-            num_rows="fixed",
             hide_index=True,
             key="closing_checklist_editor_state",
             on_change=on_closing_change
         )
-        
-        c_btn1, c_btn2 = st.columns(2)
-        with c_btn1:
-            if st.button("💾 Save Closing Checklist Log to Disk", type="primary"):
-                save_daily_closing_checklist(st.session_state['closing_df'])
-                log_dispatch_action(f"Saved EOD debrief closing checklist log ({len(st.session_state['closing_df'])} drivers).", username=active_user)
-                st.success(f"Saved EOD debrief log and created snapshot in {HISTORY_DIR}/!")
-        with c_btn2:
-            closing_csv = st.session_state['closing_df'].to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="📥 Download Closing Checklist CSV",
-                data=closing_csv,
-                file_name="daily_closing_checklist.csv",
-                mime="text/csv"
-            )
-
-        st.markdown("---")
-        st.subheader("🖨️ Printable Handwritten Closing Checklist (Sorted Numerically by Van Number)")
-        
-        closing_html_view = generate_printable_closing_html(st.session_state['closing_df'])
-        components.html(closing_html_view, height=500, scrolling=True)
-
     else:
-        st.info("Run auto-assignment on Tab 1 to populate today's driver and van assignments into the Closing Checklist.")
+        st.info("No active roster loaded yet. Run auto-assignment or load a roster snapshot in Tab 1 to populate the closing checklist.")
+
+    st.markdown("---")
+    st.subheader("🔑 Station & Delivery Access Codes")
+    
+    access_df = st.session_state.get('access_codes_df')
+    if access_df is not None:
+        user_role = st.session_state.get('user_role', 'Dispatcher')
+        is_admin = (user_role == 'Admin')
+
+        if is_admin:
+            st.caption("Manage station gate codes, door access, and locker codes (Admin Edit Mode).")
+            edited_access = st.data_editor(
+                access_df,
+                use_container_width=True,
+                hide_index=True,
+                num_rows="dynamic",
+                key="access_codes_editor_key"
+            )
+            if st.button("💾 Save Access Codes", type="primary"):
+                st.session_state['access_codes_df'] = edited_access.copy()
+                save_local_access_codes(edited_access)
+                log_dispatch_action("Updated Station Access & Gate Codes.", username=active_user)
+                st.toast("Access codes saved!", icon="🔑")
+                st.rerun()
+        else:
+            st.caption("Read-Only View for Dispatch Desk.")
+            st.dataframe(access_df, use_container_width=True, hide_index=True)
