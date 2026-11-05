@@ -5,6 +5,7 @@ import logging
 import tempfile
 import pandas as pd
 import streamlit as st
+from google.cloud import storage
 
 try:
     from dotenv import load_dotenv
@@ -12,8 +13,13 @@ try:
 except ImportError:
     pass
 
-# Configuration & Storage Abstraction
-STORAGE_MODE = os.getenv("STORAGE_MODE", "LOCAL").upper()
+# ---------------------------------------------------------
+# CONFIGURATION & STORAGE ABSTRACTION
+# ---------------------------------------------------------
+STORAGE_MODE = os.getenv("STORAGE_MODE", "CLOUD").upper()
+GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "dsp-app-data")
+
+# Storage Object Paths / Keys inside GCS or local disk
 MASTER_FLEET_PATH = os.getenv("MASTER_FLEET_PATH", "master_fleet.xlsx")
 MASTER_PHONES_PATH = os.getenv("MASTER_PHONES_PATH", "master_phones.xlsx")
 CLOSING_CHECKLIST_PATH = os.getenv("CLOSING_CHECKLIST_PATH", "closing_checklist_log.xlsx")
@@ -26,11 +32,6 @@ INCIDENTS_LOG_PATH = os.getenv("INCIDENTS_LOG_PATH", "master_incidents.xlsx")
 HISTORY_DIR = os.getenv("HISTORY_DIR", "history")
 LOG_FILE_PATH = os.getenv("DISPATCH_LOG_PATH", "dispatch_audit.log")
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
-
-# Cloud S3 Configuration
-AWS_S3_BUCKET = os.getenv("AWS_S3_BUCKET", "")
-AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID", "")
-AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY", "")
 
 # User Credentials
 ADMIN_USER = os.getenv("ADMIN_USER", "admin")
@@ -51,30 +52,92 @@ USER_CREDENTIALS = {
     }
 }
 
-# Configure Local Dispatch Action Logger
+# ---------------------------------------------------------
+# LOGGING SETUP
+# ---------------------------------------------------------
 logging.basicConfig(
-    filename=LOG_FILE_PATH,
+    filename=LOG_FILE_PATH if STORAGE_MODE == "LOCAL" else None,
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] (User: %(user)s) - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 
 def log_dispatch_action(action_msg, username="System"):
-    """Logs dispatch operations (driver swaps, van reassignments, EROs) to disk for auditing."""
+    """Logs dispatch operations to console/disk auditing logs."""
     logger = logging.getLogger("DispatchAudit")
     logger.info(action_msg, extra={"user": username})
 
+# ---------------------------------------------------------
+# GOOGLE CLOUD STORAGE HELPERS
+# ---------------------------------------------------------
+@st.cache_resource
+def get_gcs_client():
+    """Returns an authenticated GCS client using default container credentials."""
+    return storage.Client()
+
+def get_gcs_bucket():
+    """Retrieves the target GCS bucket instance."""
+    client = get_gcs_client()
+    return client.bucket(GCS_BUCKET_NAME)
+
+def read_gcs_dataframe(blob_path: str) -> pd.DataFrame:
+    """Reads an Excel or CSV file directly from GCS into a DataFrame without touching local disk."""
+    try:
+        bucket = get_gcs_bucket()
+        blob = bucket.blob(blob_path)
+        if not blob.exists():
+            return pd.DataFrame()
+        
+        content = blob.download_as_bytes()
+        buffer = io.BytesIO(content)
+        if blob_path.endswith(('.xlsx', '.xls')):
+            return pd.read_excel(buffer)
+        else:
+            return pd.read_csv(buffer)
+    except Exception as e:
+        print(f"Error reading {blob_path} from GCS: {e}")
+        return pd.DataFrame()
+
+def save_gcs_dataframe(df: pd.DataFrame, blob_path: str):
+    """Writes a DataFrame to GCS as an Excel or CSV file in-memory."""
+    if df is None or df.empty:
+        return
+
+    try:
+        bucket = get_gcs_bucket()
+        blob = bucket.blob(blob_path)
+        buffer = io.BytesIO()
+
+        if blob_path.endswith(('.xlsx', '.xls')):
+            with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                df.to_excel(writer, index=False)
+            content_type = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        else:
+            df.to_csv(buffer, index=False)
+            content_type = 'text/csv'
+
+        blob.upload_from_string(buffer.getvalue(), content_type=content_type)
+    except Exception as e:
+        print(f"Error saving {blob_path} to GCS: {e}")
+
+# ---------------------------------------------------------
+# DUAL-MODE STORAGE DISPATCHERS (GCS / LOCAL FALLBACK)
+# ---------------------------------------------------------
 def safe_save_dataframe(df, file_path):
-    """Saves a DataFrame to disk using atomic writing."""
+    """Saves a DataFrame to Cloud Storage (if enabled) or local disk atomically."""
     if df is None or df.empty:
         return
     
+    if STORAGE_MODE == "CLOUD":
+        save_gcs_dataframe(df, file_path)
+        return
+
+    # Local disk fallback
     dir_name = os.path.dirname(file_path)
     if dir_name and not os.path.exists(dir_name):
         os.makedirs(dir_name, exist_ok=True)
         
     ext = os.path.splitext(file_path)[1].lower()
-    
     with tempfile.NamedTemporaryFile(delete=False, suffix=ext, dir=dir_name if dir_name else ".") as tmp:
         tmp_path = tmp.name
 
@@ -89,6 +152,18 @@ def safe_save_dataframe(df, file_path):
             os.remove(tmp_path)
         raise e
 
+def load_dataframe_auto(file_path: str) -> pd.DataFrame:
+    """Reads a DataFrame from Cloud Storage or Local disk depending on environment."""
+    if STORAGE_MODE == "CLOUD":
+        return read_gcs_dataframe(file_path)
+
+    if os.path.exists(file_path):
+        return pd.read_excel(file_path) if file_path.endswith(('.xlsx', '.xls')) else pd.read_csv(file_path)
+    return pd.DataFrame()
+
+# ---------------------------------------------------------
+# AUTHENTICATION & HISTORY MANAGERS
+# ---------------------------------------------------------
 def authenticate_user(username, password):
     u_clean = str(username).strip()
     p_clean = str(password).strip()
@@ -101,47 +176,47 @@ def authenticate_user(username, password):
     return False, None, None
 
 def ensure_history_dir():
+    """No-op on Cloud Storage; ensures folder path locally."""
     if STORAGE_MODE == "LOCAL" and not os.path.exists(HISTORY_DIR):
         os.makedirs(HISTORY_DIR, exist_ok=True)
 
 def cleanup_old_snapshots(days_to_keep=30):
-    if STORAGE_MODE == "LOCAL" and os.path.exists(HISTORY_DIR):
+    """Purges snapshots older than days_to_keep in Cloud Storage or local disk."""
+    cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days_to_keep)
+
+    if STORAGE_MODE == "CLOUD":
+        try:
+            bucket = get_gcs_bucket()
+            prefix = f"{HISTORY_DIR}/"
+            blobs = bucket.list_blobs(prefix=prefix)
+            for blob in blobs:
+                if (blob.name.endswith(".xlsx") and ("roster_" in blob.name or "closing_checklist_" in blob.name)):
+                    if blob.updated < cutoff:
+                        blob.delete()
+        except Exception as e:
+            print(f"Error cleaning up GCS snapshots: {e}")
+        return
+
+    # Local Cleanup Fallback
+    if os.path.exists(HISTORY_DIR):
         now = datetime.datetime.now()
-        cutoff = datetime.timedelta(days=days_to_keep)
+        local_cutoff = datetime.timedelta(days=days_to_keep)
         for filename in os.listdir(HISTORY_DIR):
             if (filename.startswith("roster_") or filename.startswith("closing_checklist_")) and filename.endswith(".xlsx"):
                 filepath = os.path.join(HISTORY_DIR, filename)
                 file_mtime = datetime.datetime.fromtimestamp(os.path.getmtime(filepath))
-                if now - file_mtime > cutoff:
+                if now - file_mtime > local_cutoff:
                     try:
                         os.remove(filepath)
                     except Exception as e:
-                        print(f"Error purging old snapshot {filename}: {e}")
+                        print(f"Error purging old local snapshot {filename}: {e}")
 
 def save_snapshot_file(roster_df, filename):
     if roster_df is None or roster_df.empty:
         return
-        
-    if STORAGE_MODE == "CLOUD" and AWS_S3_BUCKET:
-        try:
-            import boto3
-            s3_client = boto3.client(
-                's3',
-                aws_access_key_id=AWS_ACCESS_KEY_ID,
-                aws_secret_access_key=AWS_SECRET_ACCESS_KEY
-            )
-            buffer = io.BytesIO()
-            roster_df.to_excel(buffer, index=False)
-            buffer.seek(0)
-            s3_key = f"{HISTORY_DIR}/{filename}"
-            s3_client.upload_fileobj(buffer, AWS_S3_BUCKET, s3_key)
-            return
-        except Exception as e:
-            print(f"Error saving snapshot to S3: {e}. Falling back to local disk storage.")
-
-    ensure_history_dir()
-    filepath = os.path.join(HISTORY_DIR, filename)
-    safe_save_dataframe(roster_df, filepath)
+    
+    blob_path = f"{HISTORY_DIR}/{filename}"
+    safe_save_dataframe(roster_df, blob_path)
 
 def save_daily_closing_checklist(closing_df):
     if closing_df is None or closing_df.empty:
@@ -153,24 +228,20 @@ def save_daily_closing_checklist(closing_df):
     save_snapshot_file(closing_df, snapshot_fname)
 
 def list_snapshot_files():
-    if STORAGE_MODE == "CLOUD" and AWS_S3_BUCKET:
+    if STORAGE_MODE == "CLOUD":
         try:
-            import boto3
-            s3_client = boto3.client(
-                's3',
-                aws_access_key_id=AWS_ACCESS_KEY_ID,
-                aws_secret_access_key=AWS_SECRET_ACCESS_KEY
-            )
-            response = s3_client.list_objects_v2(Bucket=AWS_S3_BUCKET, Prefix=f"{HISTORY_DIR}/")
+            bucket = get_gcs_bucket()
+            prefix = f"{HISTORY_DIR}/"
+            blobs = bucket.list_blobs(prefix=prefix)
             files = []
-            if 'Contents' in response:
-                for obj in response['Contents']:
-                    fname = os.path.basename(obj['Key'])
-                    if fname.startswith("roster_") and fname.endswith(".xlsx"):
-                        files.append(fname)
+            for blob in blobs:
+                fname = os.path.basename(blob.name)
+                if fname.startswith("roster_") and fname.endswith(".xlsx"):
+                    files.append(fname)
             return sorted(files, reverse=True)
         except Exception as e:
-            print(f"Error reading S3 snapshots: {e}")
+            print(f"Error reading GCS snapshots: {e}")
+            return []
 
     if os.path.exists(HISTORY_DIR):
         return sorted(
@@ -180,22 +251,9 @@ def list_snapshot_files():
     return []
 
 def load_snapshot_file(filename):
-    if STORAGE_MODE == "CLOUD" and AWS_S3_BUCKET:
-        try:
-            import boto3
-            s3_client = boto3.client(
-                's3',
-                aws_access_key_id=AWS_ACCESS_KEY_ID,
-                aws_secret_access_key=AWS_SECRET_ACCESS_KEY
-            )
-            s3_key = f"{HISTORY_DIR}/{filename}"
-            obj = s3_client.get_object(Bucket=AWS_S3_BUCKET, Key=s3_key)
-            return pd.read_excel(io.BytesIO(obj['Body'].read())).astype(str)
-        except Exception as e:
-            print(f"Error reading S3 snapshot file: {e}")
-
-    filepath = os.path.join(HISTORY_DIR, filename)
-    return pd.read_excel(filepath).astype(str)
+    blob_path = f"{HISTORY_DIR}/{filename}"
+    df = load_dataframe_auto(blob_path)
+    return df.astype(str) if not df.empty else df
 
 def process_access_data(access_df):
     if access_df is None or access_df.empty:
@@ -212,42 +270,44 @@ def process_access_data(access_df):
     out_df['Special Instructions'] = df[notes_col].astype(str).str.strip()
     return out_df
 
-# Centralized Dataset File Loaders (Returns .copy() to prevent Streamlit cache object mutation)
+# ---------------------------------------------------------
+# DATASET LOADERS & CACHING
+# ---------------------------------------------------------
 @st.cache_data(ttl=60, show_spinner=False)
 def load_local_fleet():
-    if os.path.exists(MASTER_FLEET_PATH):
+    df = load_dataframe_auto(MASTER_FLEET_PATH)
+    if not df.empty:
         try:
             from modules.fleet import process_fleet_data
-            vans_raw = pd.read_excel(MASTER_FLEET_PATH) if MASTER_FLEET_PATH.endswith(('.xlsx', '.xls')) else pd.read_csv(MASTER_FLEET_PATH)
-            return process_fleet_data(vans_raw).copy()
+            return process_fleet_data(df).copy()
         except Exception: pass
     return None
 
 @st.cache_data(ttl=60, show_spinner=False)
 def load_local_phones():
-    if os.path.exists(MASTER_PHONES_PATH):
+    df = load_dataframe_auto(MASTER_PHONES_PATH)
+    if not df.empty:
         try:
             from modules.fleet import process_phone_data
-            phones_raw = pd.read_excel(MASTER_PHONES_PATH) if MASTER_PHONES_PATH.endswith(('.xlsx', '.xls')) else pd.read_csv(MASTER_PHONES_PATH)
-            return process_phone_data(phones_raw).copy()
+            return process_phone_data(df).copy()
         except Exception: pass
     return None
 
 @st.cache_data(ttl=60, show_spinner=False)
 def load_local_drivers():
-    if os.path.exists(MASTER_DRIVERS_PATH):
+    df = load_dataframe_auto(MASTER_DRIVERS_PATH)
+    if not df.empty:
         try:
             from modules.fleet import process_driver_data
-            drivers_raw = pd.read_excel(MASTER_DRIVERS_PATH) if MASTER_DRIVERS_PATH.endswith(('.xlsx', '.xls')) else pd.read_csv(MASTER_DRIVERS_PATH)
-            return process_driver_data(drivers_raw).copy()
+            return process_driver_data(df).copy()
         except Exception: pass
     return pd.DataFrame(columns=["Driver Name", "Transporter ID", "Phone Number", "Status", "Role", "Hire Date", "Preferred Shifts", "Overall Score", "Standing"])
 
 @st.cache_data(ttl=60, show_spinner=False)
 def load_local_schedule():
-    if os.path.exists(WEEKLY_SCHEDULE_PATH):
+    df = load_dataframe_auto(WEEKLY_SCHEDULE_PATH)
+    if not df.empty:
         try:
-            df = pd.read_excel(WEEKLY_SCHEDULE_PATH) if WEEKLY_SCHEDULE_PATH.endswith(('.xlsx', '.xls')) else pd.read_csv(WEEKLY_SCHEDULE_PATH)
             if 'Driver Name' in df.columns:
                 df['first_name'] = df['Driver Name'].astype(str).str.strip().str.split().str[0].str.upper()
                 df = df.sort_values(by=['first_name', 'Driver Name'], ascending=[True, True]).drop(columns=['first_name']).reset_index(drop=True)
@@ -257,44 +317,30 @@ def load_local_schedule():
 
 @st.cache_data(ttl=60, show_spinner=False)
 def load_local_scorecards():
-    if os.path.exists(SCORECARDS_PATH):
-        try:
-            df = pd.read_excel(SCORECARDS_PATH) if SCORECARDS_PATH.endswith(('.xlsx', '.xls')) else pd.read_csv(SCORECARDS_PATH)
-            return df.copy()
-        except Exception: pass
-    return pd.DataFrame()
+    df = load_dataframe_auto(SCORECARDS_PATH)
+    return df.copy() if not df.empty else pd.DataFrame()
 
 @st.cache_data(ttl=60, show_spinner=False)
 def load_local_access_codes():
-    if os.path.exists(ACCESS_CODES_PATH):
+    df = load_dataframe_auto(ACCESS_CODES_PATH)
+    if not df.empty:
         try:
-            raw_codes = pd.read_excel(ACCESS_CODES_PATH) if ACCESS_CODES_PATH.endswith(('.xlsx', '.xls')) else pd.read_csv(ACCESS_CODES_PATH)
-            return process_access_data(raw_codes).copy()
+            return process_access_data(df).copy()
         except Exception: pass
     return pd.DataFrame(columns=["Location", "Code", "Special Instructions"])
 
 @st.cache_data(ttl=10, show_spinner=False)
 def load_local_attendance_log():
-    """Loads recorded driver attendance infractions from disk."""
-    if os.path.exists(ATTENDANCE_LOG_PATH):
-        try:
-            df = pd.read_excel(ATTENDANCE_LOG_PATH) if ATTENDANCE_LOG_PATH.endswith(('.xlsx', '.xls')) else pd.read_csv(ATTENDANCE_LOG_PATH)
-            return df.copy()
-        except Exception: pass
-    return pd.DataFrame(columns=["Date", "Driver Name", "Infraction Type", "Logged By", "Notes"])
+    df = load_dataframe_auto(ATTENDANCE_LOG_PATH)
+    return df.copy() if not df.empty else pd.DataFrame(columns=["Date", "Driver Name", "Infraction Type", "Logged By", "Notes"])
 
 @st.cache_data(ttl=10, show_spinner=False)
 def load_local_incidents_log():
-    """Loads recorded safety, driving, and behavior incident logs from disk."""
-    if os.path.exists(INCIDENTS_LOG_PATH):
-        try:
-            df = pd.read_excel(INCIDENTS_LOG_PATH) if INCIDENTS_LOG_PATH.endswith(('.xlsx', '.xls')) else pd.read_csv(INCIDENTS_LOG_PATH)
-            return df.copy()
-        except Exception: pass
-    return pd.DataFrame(columns=["Date", "Driver Name", "Severity", "Category", "Infraction / Detail", "Van Bumper", "Logged By", "Notes"])
+    df = load_dataframe_auto(INCIDENTS_LOG_PATH)
+    return df.copy() if not df.empty else pd.DataFrame(columns=["Date", "Driver Name", "Severity", "Category", "Infraction / Detail", "Van Bumper", "Logged By", "Notes"])
 
 def save_driver_incident(driver_name, severity, category, infraction_detail, van_bumper, logged_by, notes):
-    """Appends a new driving or behavior incident record atomically to disk."""
+    """Appends a new driving or behavior incident record atomically to storage."""
     incidents_df = load_local_incidents_log()
     new_record = {
         "Date": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M"),
