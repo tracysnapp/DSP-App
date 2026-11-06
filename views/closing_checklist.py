@@ -2,10 +2,7 @@ import streamlit as st
 import pandas as pd
 from engine import (
     save_daily_closing_checklist, 
-    log_dispatch_action,
-    load_local_access_codes,
-    safe_save_dataframe,
-    ACCESS_CODES_PATH
+    log_dispatch_action
 )
 from modules.roster import update_closing_checklist_assignments
 
@@ -68,31 +65,3 @@ def render_closing_checklist_tab():
         )
     else:
         st.info("No active roster loaded yet. Run auto-assignment or load a roster snapshot in Tab 1 to populate the closing checklist.")
-
-    st.markdown("---")
-    st.subheader("🔑 Station & Delivery Access Codes")
-    
-    access_df = st.session_state.get('access_codes_df')
-    if access_df is not None:
-        user_role = st.session_state.get('user_role', 'Dispatcher')
-        is_admin = (user_role == 'Admin')
-
-        if is_admin:
-            st.caption("Manage station gate codes, door access, and locker codes (Admin Edit Mode).")
-            edited_access = st.data_editor(
-                access_df,
-                use_container_width=True,
-                hide_index=True,
-                num_rows="dynamic",
-                key="access_codes_editor_key"
-            )
-            if st.button("💾 Save Access Codes", type="primary"):
-                st.session_state['access_codes_df'] = edited_access.copy()
-                safe_save_dataframe(edited_access, ACCESS_CODES_PATH)
-                load_local_access_codes.clear()
-                log_dispatch_action("Updated Station Access & Gate Codes.", username=active_user)
-                st.toast("Access codes saved!", icon="🔑")
-                st.rerun()
-        else:
-            st.caption("Read-Only View for Dispatch Desk.")
-            st.dataframe(access_df, use_container_width=True, hide_index=True)
