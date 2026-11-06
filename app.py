@@ -20,6 +20,8 @@ from engine import (
     cleanup_old_snapshots,
     save_daily_closing_checklist,
     log_dispatch_action,
+    safe_save_dataframe,
+    ACCESS_CODES_PATH,
     USER_CREDENTIALS,
     ADMIN_USER,
     DISPATCH_USER
@@ -187,9 +189,10 @@ with st.sidebar:
 # ---------------------------------------------------------
 st.title("🚛 JNA Daily Operations & Command Center")
 
-tab_roster, tab_closing, tab_scheduler, tab_fleet, tab_scorecard = st.tabs([
+tab_roster, tab_closing, tab_access, tab_scheduler, tab_fleet, tab_scorecard = st.tabs([
     "📋 Route Assignment & Roster",
     "📝 Daily Closing & Debrief Checklist",
+    "🔑 Gate & Access Codes",
     "📅 Master Driver Schedule",
     "🚐 Fleet & Phone Tracker",
     "📊 Driver Performance Scorecards"
@@ -200,6 +203,36 @@ with tab_roster:
 
 with tab_closing:
     render_closing_checklist_tab()
+
+with tab_access:
+    st.subheader("🔑 Station & Delivery Access Codes")
+    access_df = st.session_state.get('access_codes_df')
+    if access_df is not None:
+        user_role = st.session_state.get('user_role', 'Dispatcher')
+        active_user = st.session_state.get('user_name', 'Dispatcher')
+        is_admin = (user_role == 'Admin')
+
+        if is_admin:
+            st.caption("Manage station gate codes, door access, and locker codes (Admin Edit Mode).")
+            edited_access = st.data_editor(
+                access_df,
+                use_container_width=True,
+                hide_index=True,
+                num_rows="dynamic",
+                key="access_codes_editor_key"
+            )
+            if st.button("💾 Save Access Codes", type="primary"):
+                st.session_state['access_codes_df'] = edited_access.copy()
+                safe_save_dataframe(edited_access, ACCESS_CODES_PATH)
+                load_local_access_codes.clear()
+                log_dispatch_action("Updated Station Access & Gate Codes.", username=active_user)
+                st.toast("Access codes saved!", icon="🔑")
+                st.rerun()
+        else:
+            st.caption("Read-Only View for Dispatch Desk.")
+            st.dataframe(access_df, use_container_width=True, hide_index=True)
+    else:
+        st.info("No access code records found in master storage.")
 
 with tab_scheduler:
     render_scheduler_tab()
