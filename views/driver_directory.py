@@ -3,6 +3,7 @@ from engine import (
     ATTENDANCE_LOG_PATH,
     MASTER_DRIVERS_PATH,
     load_local_attendance_log,
+    load_local_drivers,
     log_dispatch_action,
     safe_save_dataframe,
 )
@@ -13,6 +14,20 @@ import streamlit as st
 
 def render_driver_directory_tab():
   st.subheader("👥 Master Driver Directory & Attendance Accountability")
+
+  # Defensive session state safeguards
+  if (
+      "drivers_df" not in st.session_state
+      or st.session_state["drivers_df"] is None
+  ):
+    st.session_state["drivers_df"] = load_local_drivers()
+
+  if (
+      "attendance_log_df" not in st.session_state
+      or st.session_state["attendance_log_df"] is None
+  ):
+    st.session_state["attendance_log_df"] = load_local_attendance_log()
+
   drivers = st.session_state.get("drivers_df")
   schedule_df = st.session_state.get("schedule_df")
   active_user = st.session_state.get("user_name", "Admin")
@@ -71,6 +86,7 @@ def render_driver_directory_tab():
           ).reset_index(drop=True)
           st.session_state["drivers_df"] = process_driver_data(updated_drivers)
           safe_save_dataframe(st.session_state["drivers_df"], MASTER_DRIVERS_PATH)
+          load_local_drivers.clear()  # Clear cache to reflect GCS update immediately
           log_dispatch_action(
               f"Added driver '{new_d_name.strip()}' to Master Directory.",
               username=active_user,
@@ -123,6 +139,7 @@ def render_driver_directory_tab():
         st.session_state["drivers_df"]
     )
     safe_save_dataframe(st.session_state["drivers_df"], MASTER_DRIVERS_PATH)
+    load_local_drivers.clear()  # Clear cache to ensure fresh fetch from GCS
     log_dispatch_action(
         "Saved Master Driver Directory updates to disk.", username=active_user
     )
@@ -137,12 +154,6 @@ def render_driver_directory_tab():
       "Quickly log call-outs, late arrivals, no-shows, or unexcused absences"
       " without touching the daily roster."
   )
-
-  if (
-      "attendance_log_df" not in st.session_state
-      or st.session_state["attendance_log_df"] is None
-  ):
-    st.session_state["attendance_log_df"] = load_local_attendance_log()
 
   attendance_log = st.session_state["attendance_log_df"]
 
@@ -202,6 +213,7 @@ def render_driver_directory_tab():
           safe_save_dataframe(
               st.session_state["attendance_log_df"], ATTENDANCE_LOG_PATH
           )
+          load_local_attendance_log.clear()  # Clear cache
 
           log_dispatch_action(
               f"ATTENDANCE LOGGED: '{sel_inf_driver}' marked '{sel_inf_type}' on"
@@ -236,6 +248,7 @@ def render_driver_directory_tab():
       safe_save_dataframe(
           st.session_state["attendance_log_df"], ATTENDANCE_LOG_PATH
       )
+      load_local_attendance_log.clear()  # Clear cache
       st.success("Infraction ledger saved!")
       st.rerun()
 
