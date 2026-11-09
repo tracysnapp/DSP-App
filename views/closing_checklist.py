@@ -1,8 +1,11 @@
+import pandas as pd
+from engine import log_dispatch_action, save_daily_closing_checklist
+from modules.roster import update_closing_checklist_assignments
 import streamlit as st
 
 
-def render():
-  st.title("Closing Checklist")
+def render_closing_checklist_tab():
+  st.subheader("📝 Daily Closing & Debrief Checklist")
 
   # Inject custom CSS to clean up layout during printing
   st.markdown(
@@ -21,33 +24,123 @@ def render():
       unsafe_allow_html=True,
   )
 
-  # Print Action Button
-  if st.button("🖨️ Print Closing Checklist"):
-    st.markdown(
-        """
-            <script>
-                window.print();
-            </script>
-            """,
-        unsafe_allow_html=True,
+  active_user = st.session_state.get("user_name", "Dispatcher")
+
+  if (
+      "closing_df" not in st.session_state
+      or st.session_state["closing_df"] is None
+      or st.session_state["closing_df"].empty
+  ):
+    if (
+        "current_roster" in st.session_state
+        and not st.session_state["current_roster"].empty
+    ):
+      update_closing_checklist_assignments(
+          st.session_state["current_roster"], st.session_state
+      )
+    else:
+      st.session_state["closing_df"] = pd.DataFrame(
+          columns=[
+              "Van",
+              "Driver",
+              "Route",
+              "Phone ID",
+              "Bag Returned",
+              "Key Returned",
+              "Phone Returned",
+              "Gas Level",
+              "Miles",
+              "Debrief Notes",
+              "Status",
+          ]
+      )
+
+  closing_df = st.session_state["closing_df"]
+
+  if not closing_df.empty:
+    c1, c2, c3 = st.columns([2, 1, 1])
+    with c1:
+      st.caption("Track return of equipment, gas level, and route debrief status.")
+    with c2:
+      if st.button("🖨️ Print Checklist", use_container_width=True):
+        st.markdown(
+            """
+                    <script>
+                        window.print();
+                    </script>
+                    """,
+            unsafe_allow_html=True,
+        )
+    with c3:
+      if st.button(
+          "💾 Save Debrief Updates", type="primary", use_container_width=True
+      ):
+        save_daily_closing_checklist(st.session_state["closing_df"])
+        log_dispatch_action(
+            "Saved Daily Closing & Debrief Checklist state.",
+            username=active_user,
+        )
+        st.toast("Closing checklist saved to disk & GCS!", icon="📝")
+        st.rerun()
+
+    closing_config = {
+        "Van": st.column_config.TextColumn("Van", disabled=True, width="small"),
+        "Driver": st.column_config.TextColumn(
+            "Driver", disabled=True, width="medium"
+        ),
+        "Route": st.column_config.TextColumn(
+            "Route", disabled=True, width="small"
+        ),
+        "Phone ID": st.column_config.TextColumn(
+            "Phone ID", disabled=True, width="small"
+        ),
+        "Bag Returned": st.column_config.CheckboxColumn(
+            "Bag Ret.", default=False, width="small"
+        ),
+        "Key Returned": st.column_config.CheckboxColumn(
+            "Key Ret.", default=False, width="small"
+        ),
+        "Phone Returned": st.column_config.CheckboxColumn(
+            "Phone Ret.", default=False, width="small"
+        ),
+        "Gas Level": st.column_config.SelectboxColumn(
+            "Gas Level",
+            options=["Full", "3/4", "1/2", "1/4", "Empty"],
+            required=True,
+            width="small",
+        ),
+        "Miles": st.column_config.NumberColumn(
+            "End Miles", min_value=0, step=1, width="small"
+        ),
+        "Debrief Notes": st.column_config.TextColumn(
+            "Debrief Notes / Issues", width="large"
+        ),
+        "Status": st.column_config.SelectboxColumn(
+            "Status",
+            options=["PENDING", "DEBRIEFED", "FLAGGED"],
+            required=True,
+            width="small",
+        ),
+    }
+
+    def on_closing_change():
+      changes = st.session_state.get("closing_checklist_editor_state")
+      if changes and "closing_df" in st.session_state:
+        for row_idx, col_changes in changes.get("edited_rows", {}).items():
+          for col_name, new_val in col_changes.items():
+            st.session_state["closing_df"].at[row_idx, col_name] = new_val
+        save_daily_closing_checklist(st.session_state["closing_df"])
+
+    st.data_editor(
+        st.session_state["closing_df"],
+        column_config=closing_config,
+        use_container_width=True,
+        hide_index=True,
+        key="closing_checklist_editor_state",
+        on_change=on_closing_change,
     )
-
-  st.markdown("---")
-  st.subheader("Shift Completion Tasks")
-
-  # Checklist Items
-  tasks = [
-      "All delivery vans returned, parked, and secured.",
-      "DVICs (Driver Vehicle Inspection Checklists) reviewed and closed.",
-      "All rabbit devices (DAs) docked, accounted for, and charging.",
-      "Keys collected, accounted for, and secured in the lockbox.",
-      "Dispatch area, laptops, and station desk cleaned and locked.",
-      "Incident logs and Cortex summaries updated for the evening shift.",
-  ]
-
-  completed_tasks = []
-  for i, task in enumerate(tasks):
-    completed_tasks.append(st.checkbox(task, key=f"closing_task_{i}"))
-
-  if all(completed_tasks):
-    st.success("All closing procedures completed and verified.")
+  else:
+    st.info(
+        "No active roster loaded yet. Run auto-assignment or load a roster"
+        " snapshot in Tab 1 to populate the closing checklist."
+    )
