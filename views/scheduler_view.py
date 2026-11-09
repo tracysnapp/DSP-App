@@ -23,6 +23,10 @@ def render_scheduler_tab():
     drivers_df = st.session_state.get('drivers_df')
     active_user = st.session_state.get('user_name', 'Admin')
 
+    # Ensure long-range PTO is loaded in session state for cross-referencing
+    if 'pto_df' not in st.session_state:
+        st.session_state['pto_df'] = load_long_range_pto()
+
     # ==========================================
     # TAB 1: WEEKLY SHIFT SCHEDULER
     # ==========================================
@@ -38,11 +42,11 @@ def render_scheduler_tab():
 
         days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
         
-        # 7-day target inputs
+        # Build list of datetime objects for the current week starting Sunday
+        week_dates = [start_date + timedelta(days=i) for i in range(7)]
+        
         target_cols = st.columns(7)
         expected_routes_dict = {}
-        
-        # Default typical wave targets if none stored yet
         default_targets = {"Sun": 26, "Mon": 25, "Tue": 25, "Wed": 28, "Thu": 24, "Fri": 24, "Sat": 24}
         
         for i, day in enumerate(days):
@@ -59,19 +63,57 @@ def render_scheduler_tab():
             if loaded_sch.empty and drivers_df is not None and not drivers_df.empty:
                 active_drivers = drivers_df[drivers_df['Status'] == 'ACTIVE'] if 'Status' in drivers_df.columns else drivers_df
                 init_sch = []
+                
+                # Fetch active PTO database for cross-referencing
+                pto_data = st.session_state['pto_df']
+                
                 for _, row in active_drivers.iterrows():
                     full_name = str(row.get('Driver Name', ''))
                     parts = full_name.split(' ', 1)
                     last_name = parts[0] if len(parts) > 1 else full_name
                     first_name = parts[1] if len(parts) > 1 else ''
+                    combined_name = f"{last_name}, {first_name}" if first_name else last_name
                     
-                    init_sch.append({
+                    driver_row = {
                         "Last Name": last_name,
                         "First Name": first_name,
                         "Sun": "Off", "Mon": "Off", "Tue": "Off", 
                         "Wed": "Off", "Thu": "Off", "Fri": "Off", "Sat": "Off",
                         "Notes / Requests": ""
-                    })
+                    }
+                    
+                    # Check long-range calendar constraints for this driver during this week
+                    if not pto_data.empty:
+                        driver_ptos = pto_data[pto_data['Driver Name'].astype(str).str.strip().str.lower() == combined_name.lower()]
+                        notes_list = []
+                        
+                        for _, pto_row in driver_ptos.iterrows():
+                            try:
+                                p_start = pd.to_datetime(pto_row['Start Date']).date()
+                                p_end = pd.to_datetime(pto_row['End Date']).date()
+                                cat = str(pto_row['Category'])
+                                note = str(pto_row['Reason / Notes'])
+                                
+                                # Check each day of the target week against this PTO window
+                                for idx, d_date in enumerate(week_dates):
+                                    day_key = days[idx]
+                                    if p_start <= d_date <= p_end:
+                                        if "No Sundays" in cat and day_key == "Sun":
+                                            driver_row[day_key] = "Rqst Off"
+                                        elif cat in ["Approved PTO", "Unpaid Leave"]:
+                                            driver_row[day_key] = "Rqst Off"
+                                        elif cat == "Appointment / Partial Off":
+                                            driver_row[day_key] = "Rqst Off"
+                                        
+                                notes_list.append(f"{cat} ({p_start.strftime('%d-%b')} to {p_end.strftime('%d-%b')}): {note}")
+                            except Exception:
+                                pass
+                        
+                        if notes_list:
+                            driver_row["Notes / Requests"] = " | ".join(notes_list)
+
+                    init_sch.append(driver_row)
+                    
                 sch_df = pd.DataFrame(init_sch)
                 st.session_state['schedule_df'] = sch_df.sort_values(by=['Last Name', 'First Name'], ascending=[True, True]).reset_index(drop=True)
             else:
@@ -98,7 +140,7 @@ def render_scheduler_tab():
         work_shifts = ["Driver", "Helper", "OPS-AM", "OPS-PM"]
         df_display['Total Days'] = df_display[days].isin(work_shifts).sum(axis=1)
 
-        st.caption("Assign shift options. Use the 'Notes / Requests' column to track driver PTO and availability constraints.")
+        st.caption("Assign shift options. Long-range requests are auto-populated as 'Rqst Off' with notes pulled from your calendar.")
 
         shift_options = ["Driver", "Helper", "On-Call", "Off", "OPS-AM", "OPS-PM", "Rqst Off"]
         
@@ -113,7 +155,7 @@ def render_scheduler_tab():
             "Fri": st.column_config.SelectboxColumn("Fri", options=shift_options, required=True),
             "Sat": st.column_config.SelectboxColumn("Sat", options=shift_options, required=True),
             "Total Days": st.column_config.NumberColumn("Total Days", disabled=True, format="%d days"),
-            "Notes / Requests": st.column_config.TextColumn("Notes / Requests", help="Record vacation dates or scheduling restrictions here.")
+            "Notes / Requests": st.column_config.TextColumn("Notes / Requests", help="Synced automatically from Long-Range Calendar.")
         }
 
         st.data_editor(
@@ -158,9 +200,6 @@ def render_scheduler_tab():
         st.markdown("### 🌴 Long-Range Driver PTO & Requests Tracker")
         st.caption("Log upcoming driver time-off, doctor appointments, or availability blocks well in advance to prevent weekly scheduling errors.")
 
-        if 'pto_df' not in st.session_state:
-            st.session_state['pto_df'] = load_long_range_pto()
-
         with st.form("pto_entry_form", clear_on_submit=True):
             st.markdown("#### Log New Request")
             f_col1, f_col2, f_col3, f_col4 = st.columns(4)
@@ -197,8 +236,13 @@ def render_scheduler_tab():
                 
                 os.makedirs(os.path.dirname(LONG_RANGE_PTO_PATH), exist_ok=True)
                 st.session_state['pto_df'].to_csv(LONG_RANGE_PTO_PATH, index=False)
+                
+                # Clear cached weekly schedule so it regenerates with the new PTO sync
+                if 'schedule_df' in st.session_state:
+                    del st.session_state['schedule_df']
+
                 log_dispatch_action(f"Added long-range PTO request for {sel_driver} ({start_p_date} to {end_p_date}).", username=active_user)
-                st.success(f"Successfully recorded PTO request for {sel_driver}!")
+                st.success(f"Successfully recorded PTO request for {sel_driver}! Weekly schedule view updated.")
 
         st.markdown("---")
         st.markdown("### 📋 Active Requests Log")
@@ -219,7 +263,7 @@ def render_scheduler_tab():
         }
 
         edited_pto_df = st.data_editor(
-            st.session_state['pto_df'],
+            st.session_state['schedule_df'] if False else st.session_state['pto_df'], # keeps reference cleanly bound
             column_config=pto_config,
             use_container_width=True,
             num_rows="dynamic",
@@ -234,5 +278,10 @@ def render_scheduler_tab():
                 os.makedirs(os.path.dirname(LONG_RANGE_PTO_PATH), exist_ok=True)
                 edited_pto_df.to_csv(LONG_RANGE_PTO_PATH, index=False)
                 st.session_state['pto_df'] = edited_pto_df.copy()
+                
+                # Clear weekly schedule cache so it rebuilds with updated PTO ranges
+                if 'schedule_df' in st.session_state:
+                    del st.session_state['schedule_df']
+
                 log_dispatch_action("Updated long-range PTO calendar database.", username=active_user)
-                st.success("Long-range calendar saved successfully!")
+                st.success("Long-range calendar saved and weekly schedule synchronized!")
