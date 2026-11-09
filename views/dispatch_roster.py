@@ -85,53 +85,53 @@ def format_van_with_size(van_bumper, fleet_df):
     return bmp
 
 def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
-    st.subheader("Daily Route Assignment & Roster")
+    st.subheader("Daily Route Assignment & Roster")[cite: 2]
     
-    fleet = st.session_state.get('fleet_df')
-    phones = st.session_state.get('phones_df')
-    drivers_df = st.session_state.get('drivers_df')
-    active_user = st.session_state.get('user_name', 'Dispatcher')
+    fleet = st.session_state.get('fleet_df')[cite: 2]
+    phones = st.session_state.get('phones_df')[cite: 2]
+    drivers_df = st.session_state.get('drivers_df')[cite: 2]
+    active_user = st.session_state.get('user_name', 'Dispatcher')[cite: 2]
 
     if fleet is not None:
-        active_mask = fleet['status_clean'].isin(['UP', 'ACTIVE', 'OPERATIONAL', 'WORKABLE', 'AVAILABLE']) if 'status_clean' in fleet.columns else [True]*len(fleet)
-        active_fleet_df = fleet[active_mask].copy() if 'status_clean' in fleet.columns else fleet.copy()
-        active_count = len(active_fleet_df)
+        active_mask = fleet['status_clean'].isin(['UP', 'ACTIVE', 'OPERATIONAL', 'WORKABLE', 'AVAILABLE']) if 'status_clean' in fleet.columns else [True]*len(fleet)[cite: 2]
+        active_fleet_df = fleet[active_mask].copy() if 'status_clean' in fleet.columns else fleet.copy()[cite: 2]
+        active_count = len(active_fleet_df)[cite: 2]
         
         if 'current_roster' in st.session_state and not st.session_state['current_roster'].empty:
-            r_col1, r_col2, r_col3 = st.columns([3, 1, 1])
+            r_col1, r_col2, r_col3 = st.columns([3, 1, 1])[cite: 2]
             
             with r_col2:
-                if st.button("💾 Save Updates", type="primary", use_container_width=True):
+                if st.button("💾 Save Updates", type="primary", use_container_width=True):[cite: 2]
                     update_live_roster_fn(
-                        st.session_state['current_roster'], 
-                        toast_msg="Roster and snapshot saved to Cloud Storage!"
+                        st.session_state['current_roster'], [cite: 2]
+                        toast_msg="Roster and snapshot saved to Cloud Storage!"[cite: 2]
                     )
-                    log_dispatch_action("Manually saved active roster updates and GCS snapshot.", username=active_user)
-                    st.rerun()
+                    log_dispatch_action("Manually saved active roster updates and GCS snapshot.", username=active_user)[cite: 2]
+                    st.rerun()[cite: 2]
 
             with r_col3:
-                if st.button("⚠️ Reset Today's Roster", type="secondary", use_container_width=True):
-                    st.session_state['current_roster'] = pd.DataFrame()
-                    st.session_state['closing_df'] = pd.DataFrame()
-                    log_dispatch_action("Reset today's active roster and closing checklist.", username=active_user)
-                    st.toast("Cleared active roster and closing checklist!", icon="🧹")
-                    st.rerun()
+                if st.button("⚠️ Reset Today's Roster", type="secondary", use_container_width=True):[cite: 2]
+                    st.session_state['current_roster'] = pd.DataFrame()[cite: 2]
+                    st.session_state['closing_df'] = pd.DataFrame()[cite: 2]
+                    log_dispatch_action("Reset today's active roster and closing checklist.", username=active_user)[cite: 2]
+                    st.toast("Cleared active roster and closing checklist!", icon="🧹")[cite: 2]
+                    st.rerun()[cite: 2]
 
-        if cortex_file or ('current_roster' in st.session_state and not st.session_state['current_roster'].empty):
+        if cortex_file or ('current_roster' in st.session_state and not st.session_state['current_roster'].empty):[cite: 2]
             if cortex_file:
-                routes_df = pd.read_excel(cortex_file) if cortex_file.name.endswith(('.xlsx', '.xls')) else pd.read_csv(cortex_file)
+                routes_df = pd.read_excel(cortex_file) if cortex_file.name.endswith(('.xlsx', '.xls')) else pd.read_csv(cortex_file)[cite: 2]
                 
                 # CORTEX NEW DRIVER AUTO-DETECTION (WITH FUZZY & MIDDLE NAME MATCHING)
-                driver_col = next((c for c in routes_df.columns if 'driver' in str(c).lower() and 'name' in str(c).lower()), None)
-                if driver_col and drivers_df is not None and not drivers_df.empty:
-                    cortex_drivers = [str(d).strip() for d in routes_df[driver_col].dropna().unique() if str(d).strip() and str(d).strip().lower() not in ['nan', 'none', 'null', 'unassigned']]
-                    known_drivers = list(drivers_df['Driver Name'].dropna().astype(str).str.strip().unique())
+                driver_col = next((c for c in routes_df.columns if 'driver' in str(c).lower() and 'name' in str(c).lower()), None)[cite: 2]
+                if driver_col and drivers_df is not None and not drivers_df.empty:[cite: 2]
+                    cortex_drivers = [str(d).strip() for d in routes_df[driver_col].dropna().unique() if str(d).strip() and str(d).strip().lower() not in ['nan', 'none', 'null', 'unassigned']][cite: 2]
+                    known_drivers = list(drivers_df['Driver Name'].dropna().astype(str).str.strip().unique())[cite: 2]
                     
-                    new_drivers = [d for d in cortex_drivers if not is_driver_in_directory(d, known_drivers)]
+                    new_drivers = [d for d in cortex_drivers if not is_driver_in_directory(d, known_drivers)][cite: 2]
 
                     if new_drivers:
-                        st.info(f"💡 **New Driver Associate(s) Detected in Cortex Export:** {', '.join(new_drivers)}")
-                        if st.button("➕ Append New Driver(s) to Master Directory", type="secondary"):
+                        st.info(f"💡 **New Driver Associate(s) Detected in Cortex Export:** {', '.join(new_drivers)}")[cite: 2]
+                        if st.button("➕ Append New Driver(s) to Master Directory", type="secondary"):[cite: 2]
                             new_rows = []
                             for nd in new_drivers:
                                 new_rows.append({
@@ -145,67 +145,67 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
                                     "Overall Score": 100.0,
                                     "Standing": "Fantastic"
                                 })
-                            updated_drivers = pd.concat([drivers_df, pd.DataFrame(new_rows)], ignore_index=True)
-                            st.session_state['drivers_df'] = process_driver_data(updated_drivers)
-                            safe_save_dataframe(st.session_state['drivers_df'], MASTER_DRIVERS_PATH)
+                            updated_drivers = pd.concat([drivers_df, pd.DataFrame(new_rows)], ignore_index=True)[cite: 2]
+                            st.session_state['drivers_df'] = process_driver_data(updated_drivers)[cite: 2]
+                            safe_save_dataframe(st.session_state['drivers_df'], MASTER_DRIVERS_PATH)[cite: 2]
                             
                             # Invalidate cached drivers dataset so all UI views refresh immediately
-                            load_local_drivers.clear()
+                            load_local_drivers.clear()[cite: 2]
                             
-                            log_dispatch_action(f"Added new drivers {new_drivers} to Master Directory from Cortex.", username=active_user)
-                            st.success(f"Added {len(new_drivers)} driver(s) to Master Directory!")
-                            st.rerun()
+                            log_dispatch_action(f"Added new drivers {new_drivers} to Master Directory from Cortex.", username=active_user)[cite: 2]
+                            st.success(f"Added {len(new_drivers)} driver(s) to Master Directory!")[cite: 2]
+                            st.rerun()[cite: 2]
 
-                c1, c2 = st.columns(2)
-                c1.metric("Today's Cortex Routes", len(routes_df))
-                c2.metric("Active Vans (Status: UP)", active_count)
+                c1, c2 = st.columns(2)[cite: 2]
+                c1.metric("Today's Cortex Routes", len(routes_df))[cite: 2]
+                c2.metric("Active Vans (Status: UP)", active_count)[cite: 2]
 
                 # PRIORITY VAN PRE-ASSIGNMENT SELECTION
-                with st.expander("⭐ Priority Van Pre-Assignments (Force Vans on Road)", expanded=False):
-                    st.caption("Select vans that MUST be assigned first (e.g., maintenance test run, target mileage accumulation).")
-                    active_van_bumpers = active_fleet_df['vehicleName'].astype(str).str.strip().tolist() if 'vehicleName' in active_fleet_df.columns else []
-                    van_display_map = {v: format_van_with_size(v, active_fleet_df) for v in active_van_bumpers}
+                with st.expander("⭐ Priority Van Pre-Assignments (Force Vans on Road)", expanded=False):[cite: 2]
+                    st.caption("Select vans that MUST be assigned first (e.g., maintenance test run, target mileage accumulation).")[cite: 2]
+                    active_van_bumpers = active_fleet_df['vehicleName'].astype(str).str.strip().tolist() if 'vehicleName' in active_fleet_df.columns else [][cite: 2]
+                    van_display_map = {v: format_van_with_size(v, active_fleet_df) for v in active_van_bumpers}[cite: 2]
                     
                     prio_vans_selected = st.multiselect(
-                        "Priority Vans for Today's Auto-Assignment",
-                        options=active_van_bumpers,
-                        format_func=lambda x: van_display_map.get(x, x),
-                        key="priority_vans_multiselect"
+                        "Priority Vans for Today's Auto-Assignment",[cite: 2]
+                        options=active_van_bumpers,[cite: 2]
+                        format_func=lambda x: van_display_map.get(x, x),[cite: 2]
+                        key="priority_vans_multiselect"[cite: 2]
                     )
 
-                if st.button("🚀 Run Auto-Assignment Engine", type="primary"):
+                if st.button("🚀 Run Auto-Assignment Engine", type="primary"):[cite: 2]
                     # Pass priority vans to engine if selected
                     if prio_vans_selected:
-                        prio_fleet_df = active_fleet_df.copy()
-                        if 'priority_rank' not in prio_fleet_df.columns:
-                            prio_fleet_df['priority_rank'] = 10
-                        prio_fleet_df.loc[prio_fleet_df['vehicleName'].astype(str).str.strip().isin(prio_vans_selected), 'priority_rank'] = 1
-                        results_df = run_auto_assignment(routes_df, prio_fleet_df, phones)
+                        prio_fleet_df = active_fleet_df.copy()[cite: 2]
+                        if 'priority_rank' not in prio_fleet_df.columns:[cite: 2]
+                            prio_fleet_df['priority_rank'] = 10[cite: 2]
+                        prio_fleet_df.loc[prio_fleet_df['vehicleName'].astype(str).str.strip().isin(prio_vans_selected), 'priority_rank'] = 1[cite: 2]
+                        results_df = run_auto_assignment(routes_df, prio_fleet_df, phones)[cite: 2]
                     else:
-                        results_df = run_auto_assignment(routes_df, fleet, phones)
+                        results_df = run_auto_assignment(routes_df, fleet, phones)[cite: 2]
 
-                    if 'Remarks' in results_df.columns:
-                        results_df['Remarks'] = results_df['Remarks'].replace(['EXACT', 'EXACT MATCH'], '')
+                    if 'Remarks' in results_df.columns:[cite: 2]
+                        results_df['Remarks'] = results_df['Remarks'].replace(['EXACT', 'EXACT MATCH'], '')[cite: 2]
                     
-                    if 'closing_df' in st.session_state:
-                        del st.session_state['closing_df']
+                    if 'closing_df' in st.session_state:[cite: 2]
+                        del st.session_state['closing_df'][cite: 2]
                     
-                    log_dispatch_action(f"Executed auto-assignment engine for {len(results_df)} routes. Priority vans: {prio_vans_selected}", username=active_user)
-                    update_live_roster_fn(results_df, toast_msg="Auto-assignment engine complete!")
-                    st.rerun()
+                    log_dispatch_action(f"Executed auto-assignment engine for {len(results_df)} routes. Priority vans: {prio_vans_selected}", username=active_user)[cite: 2]
+                    update_live_roster_fn(results_df, toast_msg="Auto-assignment engine complete!")[cite: 2]
+                    st.rerun()[cite: 2]
 
-            if 'current_roster' in st.session_state and not st.session_state['current_roster'].empty:
-                st.markdown("---")
+            if 'current_roster' in st.session_state and not st.session_state['current_roster'].empty:[cite: 2]
+                st.markdown("---")[cite: 2]
                 
                 # LIVE DISPATCH ACTIONS EXPANDER
-                with st.expander("🛠️ Live Dispatch Actions (Driver Swap / Reassign Van / Add Sweeper / Remove Driver/Route)", expanded=True):
-                    col_sw1, col_sw2, col_sw3, col_sw4 = st.columns(4)
-                    roster_df = st.session_state['current_roster'].copy().reset_index(drop=True)
+                with st.expander("🛠️ Live Dispatch Actions (Driver Swap / Reassign Van / Add Sweeper / Remove Driver/Route)", expanded=True):[cite: 2]
+                    col_sw1, col_sw2, col_sw3, col_sw4 = st.columns(4)[cite: 2]
+                    roster_df = st.session_state['current_roster'].copy().reset_index(drop=True)[cite: 2]
                     
                     phone_map = {}
-                    if phones is not None and not phones.empty:
-                        p_active = phones[~phones['status_clean'].isin(['INACTIVE', 'RETIRED', 'DELETED'])] if 'status_clean' in phones.columns else phones
-                        phone_map = dict(zip(p_active['device_clean'], p_active['number_clean']))
+                    if phones is not None and not phones.empty:[cite: 2]
+                        p_active = phones[~phones['status_clean'].isin(['INACTIVE', 'RETIRED', 'DELETED'])] if 'status_clean' in phones.columns else phones[cite: 2]
+                        phone_map = dict(zip(p_active['device_clean'], p_active['number_clean']))[cite: 2]
 
                     driver_option_map = {}
                     assigned_driver_options = []
@@ -218,108 +218,108 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
                         assigned_driver_options.append(display_label)
                         driver_option_map[display_label] = idx
                     
-                    used_vans = roster_df['Van Bumper'].astype(str).str.strip().tolist()
-                    active_van_names = active_fleet_df['vehicleName'].astype(str).str.strip().tolist() if 'vehicleName' in active_fleet_df.columns else []
-                    unassigned_vans = [v for v in active_van_names if v not in used_vans]
+                    used_vans = roster_df['Van Bumper'].astype(str).str.strip().tolist()[cite: 2]
+                    active_van_names = active_fleet_df['vehicleName'].astype(str).str.strip().tolist() if 'vehicleName' in active_fleet_df.columns else [][cite: 2]
+                    unassigned_vans = [v for v in active_van_names if v not in used_vans][cite: 2]
 
                     # 1. REPLACE DRIVER
                     with col_sw1:
-                        st.markdown("#### 🔄 Replace Driver")
+                        st.markdown("#### 🔄 Replace Driver")[cite: 2]
                         if assigned_driver_options:
-                            driver_sel = st.selectbox("Assigned Driver to Replace", options=assigned_driver_options, key="rep_d1")
+                            driver_sel = st.selectbox("Assigned Driver to Replace", options=assigned_driver_options, key="rep_d1")[cite: 2]
                             
-                            day_name = pd.Timestamp.now().strftime("%a")
+                            day_name = pd.Timestamp.now().strftime("%a")[cite: 2]
                             prioritized_reserves = get_prioritized_reserve_drivers(
-                                roster_df, 
-                                st.session_state.get('schedule_df', None), 
-                                st.session_state.get('drivers_df', None), 
-                                day_of_week=day_name
+                                roster_df,  [cite: 2]
+                                st.session_state.get('schedule_df', None), [cite: 2]
+                                st.session_state.get('drivers_df', None), [cite: 2]
+                                day_of_week=day_name[cite: 2]
                             )
                             
-                            reserve_labels = [p[0] for p in prioritized_reserves] + ["Other (Type Manual Name)"]
-                            selected_res_label = st.selectbox("Select Reserve Replacement", options=reserve_labels, key="res_prio_sel")
+                            reserve_labels = [p[0] for p in prioritized_reserves] + ["Other (Type Manual Name)"][cite: 2]
+                            selected_res_label = st.selectbox("Select Reserve Replacement", options=reserve_labels, key="res_prio_sel")[cite: 2]
                             
                             if selected_res_label == "Other (Type Manual Name)":
-                                manual_res_name = st.text_input("Type Driver Name", key="manual_res_name")
-                                chosen_reserve = manual_res_name.strip()
+                                manual_res_name = st.text_input("Type Driver Name", key="manual_res_name")[cite: 2]
+                                chosen_reserve = manual_res_name.strip()[cite: 2]
                             else:
-                                chosen_reserve = next((p[1] for p in prioritized_reserves if p[0] == selected_res_label), "")
+                                chosen_reserve = next((p[1] for p in prioritized_reserves if p[0] == selected_res_label), "")[cite: 2]
 
-                            if st.button("Confirm Driver Swap"):
+                            if st.button("Confirm Driver Swap"):[cite: 2]
                                 if chosen_reserve:
-                                    target_idx = driver_option_map[driver_sel]
-                                    old_driver = roster_df.at[target_idx, 'Driver']
-                                    roster_df.at[target_idx, 'Driver'] = chosen_reserve
+                                    target_idx = driver_option_map[driver_sel][cite: 2]
+                                    old_driver = roster_df.at[target_idx, 'Driver'][cite: 2]
+                                    roster_df.at[target_idx, 'Driver'] = chosen_reserve[cite: 2]
                                     
-                                    log_dispatch_action(f"Swapped driver '{old_driver}' with '{chosen_reserve}' on row index {target_idx}.", username=active_user)
-                                    update_live_roster_fn(roster_df, toast_msg=f"Replaced {old_driver} with {chosen_reserve}!")
-                                    st.rerun()
+                                    log_dispatch_action(f"Swapped driver '{old_driver}' with '{chosen_reserve}' on row index {target_idx}.", username=active_user)[cite: 2]
+                                    update_live_roster_fn(roster_df, toast_msg=f"Replaced {old_driver} with {chosen_reserve}!")[cite: 2]
+                                    st.rerun()[cite: 2]
                                 else:
-                                    st.warning("Please select or type a reserve driver name.")
+                                    st.warning("Please select or type a reserve driver name.")[cite: 2]
                         else:
-                            st.info("No drivers available.")
+                            st.info("No drivers available.")[cite: 2]
 
                     # 2. REASSIGN VAN (SHOWING VAN SIZES)
                     with col_sw2:
-                        st.markdown("#### 🚐 Reassign Van")
+                        st.markdown("#### 🚐 Reassign Van")[cite: 2]
                         if assigned_driver_options and unassigned_vans:
-                            van_target_sel = st.selectbox("Select Route / Driver", options=assigned_driver_options, key="sw_v1")
+                            van_target_sel = st.selectbox("Select Route / Driver", options=assigned_driver_options, key="sw_v1")[cite: 2]
                             
-                            van_label_map = {v: format_van_with_size(v, fleet) for v in unassigned_vans}
+                            van_label_map = {v: format_van_with_size(v, fleet) for v in unassigned_vans}[cite: 2]
                             new_van_sel = st.selectbox(
-                                "Select Unassigned Van", 
-                                options=unassigned_vans, 
-                                format_func=lambda x: van_label_map.get(x, x),
-                                key="sw_v2"
+                                "Select Unassigned Van", [cite: 2]
+                                options=unassigned_vans, [cite: 2]
+                                format_func=lambda x: van_label_map.get(x, x),[cite: 2]
+                                key="sw_v2"[cite: 2]
                             )
                             
-                            if st.button("Confirm Van Reassignment"):
-                                target_idx = driver_option_map[van_target_sel]
-                                old_van = roster_df.at[target_idx, 'Van Bumper']
+                            if st.button("Confirm Van Reassignment"):[cite: 2]
+                                target_idx = driver_option_map[van_target_sel][cite: 2]
+                                old_van = roster_df.at[target_idx, 'Van Bumper'][cite: 2]
                                 
-                                van_matches = fleet[fleet['vehicleName'].astype(str).str.strip() == str(new_van_sel).strip()] if 'vehicleName' in fleet.columns else pd.DataFrame()
-                                sel_st = str(van_matches.iloc[0].get('ST', 'M')).strip() if not van_matches.empty else 'M'
+                                van_matches = fleet[fleet['vehicleName'].astype(str).str.strip() == str(new_van_sel).strip()] if 'vehicleName' in fleet.columns else pd.DataFrame()[cite: 2]
+                                sel_st = str(van_matches.iloc[0].get('ST', 'M')).strip() if not van_matches.empty else 'M'[cite: 2]
                                 
                                 if str(new_van_sel).strip() != "UNASSIGNED":
-                                    pid, pnum = find_matching_phone(new_van_sel, phone_map)
+                                    pid, pnum = find_matching_phone(new_van_sel, phone_map)[cite: 2]
                                 else:
-                                    pid, pnum = "", ""
+                                    pid, pnum = "", ""[cite: 2]
                                 
-                                roster_df.at[target_idx, 'Van Bumper'] = str(new_van_sel)
-                                roster_df.at[target_idx, 'Sel Size'] = str(sel_st)
-                                roster_df.at[target_idx, 'Phone ID'] = str(pid)
-                                roster_df.at[target_idx, 'Phone Number'] = str(pnum)
+                                roster_df.at[target_idx, 'Van Bumper'] = str(new_van_sel)[cite: 2]
+                                roster_df.at[target_idx, 'Sel Size'] = str(sel_st)[cite: 2]
+                                roster_df.at[target_idx, 'Phone ID'] = str(pid)[cite: 2]
+                                roster_df.at[target_idx, 'Phone Number'] = str(pnum)[cite: 2]
                                 
-                                log_dispatch_action(f"Reassigned route from Van #{old_van} to Van #{new_van_sel}.", username=active_user)
-                                update_live_roster_fn(roster_df, toast_msg=f"Reassigned route from Van #{old_van} to Van #{new_van_sel}!")
-                                st.rerun()
+                                log_dispatch_action(f"Reassigned route from Van #{old_van} to Van #{new_van_sel}.", username=active_user)[cite: 2]
+                                update_live_roster_fn(roster_df, toast_msg=f"Reassigned route from Van #{old_van} to Van #{new_van_sel}!")[cite: 2]
+                                st.rerun()[cite: 2]
                         elif not unassigned_vans:
-                            st.info("No unassigned active ('UP') vans available in fleet.")
+                            st.info("No unassigned active ('UP') vans available in fleet.")[cite: 2]
 
                     # 3. ADD SWEEPER (SHOWING VAN SIZES)
                     with col_sw3:
-                        st.markdown("#### 🧹 Add Sweeper")
-                        sweeper_driver = st.text_input("Sweeper Driver Name", value="Unassigned Sweeper", key="swp_name")
+                        st.markdown("#### 🧹 Add Sweeper")[cite: 2]
+                        sweeper_driver = st.text_input("Sweeper Driver Name", value="Unassigned Sweeper", key="swp_name")[cite: 2]
                         
                         if unassigned_vans:
-                            van_label_map = {v: format_van_with_size(v, fleet) for v in unassigned_vans}
+                            van_label_map = {v: format_van_with_size(v, fleet) for v in unassigned_vans}[cite: 2]
                             selected_swp_van = st.selectbox(
-                                "Assign Unassigned Van", 
-                                options=unassigned_vans, 
-                                format_func=lambda x: van_label_map.get(x, x),
-                                key="swp_van"
+                                "Assign Unassigned Van", [cite: 2]
+                                options=unassigned_vans, [cite: 2]
+                                format_func=lambda x: van_label_map.get(x, x),[cite: 2]
+                                key="swp_van"[cite: 2]
                             )
                             
-                            if st.button("Add Sweeper to Roster"):
-                                van_matches = fleet[fleet['vehicleName'].astype(str).str.strip() == str(selected_swp_van).strip()] if 'vehicleName' in fleet.columns else pd.DataFrame()
-                                sel_st = str(van_matches.iloc[0].get('ST', 'M')).strip() if not van_matches.empty else 'M'
+                            if st.button("Add Sweeper to Roster"):[cite: 2]
+                                van_matches = fleet[fleet['vehicleName'].astype(str).str.strip() == str(selected_swp_van).strip()] if 'vehicleName' in fleet.columns else pd.DataFrame()[cite: 2]
+                                sel_st = str(van_matches.iloc[0].get('ST', 'M')).strip() if not van_matches.empty else 'M'[cite: 2]
                                 
                                 if str(selected_swp_van).strip() != "UNASSIGNED":
-                                    pid, pnum = find_matching_phone(selected_swp_van, phone_map)
+                                    pid, pnum = find_matching_phone(selected_swp_van, phone_map)[cite: 2]
                                 else:
-                                    pid, pnum = "", ""
+                                    pid, pnum = "", ""[cite: 2]
                                 
-                                sw_count = len([r for r in roster_df['Route'] if str(r).upper().startswith('S-') or 'SWEEPER' in str(r).upper()]) + 1
+                                sw_count = len([r for r in roster_df['Route'] if str(r).upper().startswith('S-') or 'SWEEPER' in str(r).upper()]) + 1[cite: 2]
                                 new_row = {
                                     'Route': f"S-{sw_count}",
                                     'Req Size': 'N/A',
@@ -337,121 +337,121 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
                                     'Remarks': ''
                                 }
                                 
-                                updated_roster = pd.concat([roster_df, pd.DataFrame([new_row])], ignore_index=True)
-                                log_dispatch_action(f"Added Sweeper '{sweeper_driver}' in Van #{selected_swp_van}.", username=active_user)
-                                update_live_roster_fn(updated_roster, toast_msg=f"Added Sweeper {sweeper_driver} in Van #{selected_swp_van}!")
-                                st.rerun()
+                                updated_roster = pd.concat([roster_df, pd.DataFrame([new_row])], ignore_index=True)[cite: 2]
+                                log_dispatch_action(f"Added Sweeper '{sweeper_driver}' in Van #{selected_swp_van}.", username=active_user)[cite: 2]
+                                update_live_roster_fn(updated_roster, toast_msg=f"Added Sweeper {sweeper_driver} in Van #{selected_swp_van}!")[cite: 2]
+                                st.rerun()[cite: 2]
                         else:
-                            st.warning("No unassigned active ('UP') vans available in fleet tracker.")
+                            st.warning("No unassigned active ('UP') vans available in fleet tracker.")[cite: 2]
 
                     # 4. REMOVE DRIVER / ROUTE ACTION
                     with col_sw4:
-                        st.markdown("#### ❌ Remove Driver / Route")
+                        st.markdown("#### ❌ Remove Driver / Route")[cite: 2]
                         if assigned_driver_options:
-                            remove_target_sel = st.selectbox("Select Route / Driver to Remove", options=assigned_driver_options, key="rem_d_sel")
-                            remove_action_mode = st.radio("Action Type", options=["Remove Driver Only (Mark Unassigned)", "Drop Route Completely"], key="rem_mode_rad")
+                            remove_target_sel = st.selectbox("Select Route / Driver to Remove", options=assigned_driver_options, key="rem_d_sel")[cite: 2]
+                            remove_action_mode = st.radio("Action Type", options=["Remove Driver Only (Mark Unassigned)", "Drop Route Completely"], key="rem_mode_rad")[cite: 2]
                             
-                            if st.button("Confirm Removal", type="primary"):
-                                target_idx = driver_option_map[remove_target_sel]
-                                target_route = roster_df.at[target_idx, 'Route']
-                                target_driver = roster_df.at[target_idx, 'Driver']
+                            if st.button("Confirm Removal", type="primary"):[cite: 2]
+                                target_idx = driver_option_map[remove_target_sel][cite: 2]
+                                target_route = roster_df.at[target_idx, 'Route'][cite: 2]
+                                target_driver = roster_df.at[target_idx, 'Driver'][cite: 2]
                                 
                                 if remove_action_mode == "Remove Driver Only (Mark Unassigned)":
-                                    roster_df.at[target_idx, 'Driver'] = 'UNASSIGNED'
-                                    log_dispatch_action(f"Removed driver '{target_driver}' from Route {target_route} (Set to UNASSIGNED).", username=active_user)
-                                    update_live_roster_fn(roster_df, toast_msg=f"Removed {target_driver} from Route {target_route}!")
+                                    roster_df.at[target_idx, 'Driver'] = 'UNASSIGNED'[cite: 2]
+                                    log_dispatch_action(f"Removed driver '{target_driver}' from Route {target_route} (Set to UNASSIGNED).", username=active_user)[cite: 2]
+                                    update_live_roster_fn(roster_df, toast_msg=f"Removed {target_driver} from Route {target_route}!")[cite: 2]
                                 else:
-                                    roster_df = roster_df.drop(index=target_idx).reset_index(drop=True)
-                                    log_dispatch_action(f"Dropped Route {target_route} (Driver: {target_driver}) completely from active roster.", username=active_user)
-                                    update_live_roster_fn(roster_df, toast_msg=f"Dropped Route {target_route} completely!")
-                                st.rerun()
+                                    roster_df = roster_df.drop(index=target_idx).reset_index(drop=True)[cite: 2]
+                                    log_dispatch_action(f"Dropped Route {target_route} (Driver: {target_driver}) completely from active roster.", username=active_user)[cite: 2]
+                                    update_live_roster_fn(roster_df, toast_msg=f"Dropped Route {target_route} completely!")[cite: 2]
+                                st.rerun()[cite: 2]
                         else:
-                            st.info("No active routes to remove.")
+                            st.info("No active routes to remove.")[cite: 2]
 
-                    st.markdown("---")
+                    st.markdown("---")[cite: 2]
 
                     # 5. ADD EXTRA ROUTE / LATE ROUTE ASSIGNMENT
-                    st.markdown("#### ➕ Add Extra Route / Late Route Assignment")
-                    st.caption("Manually append late Cortex routes or Extra Route Offers (EROs) directly to active roster.")
+                    st.markdown("#### ➕ Add Extra Route / Late Route Assignment")[cite: 2]
+                    st.caption("Manually append late Cortex routes or Extra Route Offers (EROs) directly to active roster.")[cite: 2]
 
-                    ex_col1, ex_col2, ex_col3, ex_col4 = st.columns(4)
+                    ex_col1, ex_col2, ex_col3, ex_col4 = st.columns(4)[cite: 2]
                     
-                    extra_route_code = ex_col1.text_input("Route Code*", placeholder="e.g. CX102 or ERO-1", key="ext_rt_code")
-                    extra_req_size = ex_col2.selectbox("Required Size*", options=["Standard Parcel - Medium", "Standard Parcel - Large", "Standard Parcel - Extra Large", "On-Road Experience", "Nursery 1", "Nursery 2"], index=0, key="ext_rt_size")
-                    extra_dep_time = ex_col3.text_input("Departure Time*", value="10:00 AM", placeholder="e.g. 10:15 AM", key="ext_rt_dep")
+                    extra_route_code = ex_col1.text_input("Route Code*", placeholder="e.g. CX102 or ERO-1", key="ext_rt_code")[cite: 2]
+                    extra_req_size = ex_col2.selectbox("Required Size*", options=["Standard Parcel - Medium", "Standard Parcel - Large", "Standard Parcel - Extra Large", "On-Road Experience", "Nursery 1", "Nursery 2"], index=0, key="ext_rt_size")[cite: 2]
+                    extra_dep_time = ex_col3.text_input("Departure Time*", value="10:00 AM", placeholder="e.g. 10:15 AM", key="ext_rt_dep")[cite: 2]
                     
-                    day_name = pd.Timestamp.now().strftime("%a")
+                    day_name = pd.Timestamp.now().strftime("%a")[cite: 2]
                     extra_prio_reserves = get_prioritized_reserve_drivers(
-                        roster_df, 
-                        st.session_state.get('schedule_df', None), 
-                        st.session_state.get('drivers_df', None), 
-                        day_of_week=day_name
+                        roster_df, [cite: 2]
+                        st.session_state.get('schedule_df', None), [cite: 2]
+                        st.session_state.get('drivers_df', None), [cite: 2]
+                        day_of_week=day_name[cite: 2]
                     )
-                    extra_res_labels = [p[0] for p in extra_prio_reserves] + ["Unassigned / Open", "Other (Type Manual Name)"]
-                    extra_driver_sel = ex_col4.selectbox("Assigned Driver", options=extra_res_labels, key="ext_drv_sel")
+                    extra_res_labels = [p[0] for p in extra_prio_reserves] + ["Unassigned / Open", "Other (Type Manual Name)"][cite: 2]
+                    extra_driver_sel = ex_col4.selectbox("Assigned Driver", options=extra_res_labels, key="ext_drv_sel")[cite: 2]
 
-                    ex_col5, ex_col6, ex_col7 = st.columns([1, 1, 2])
+                    ex_col5, ex_col6, ex_col7 = st.columns([1, 1, 2])[cite: 2]
                     
                     if extra_driver_sel == "Other (Type Manual Name)":
-                        extra_manual_driver = ex_col5.text_input("Type Driver Name", key="ext_manual_drv")
-                        final_extra_driver = extra_manual_driver.strip()
+                        extra_manual_driver = ex_col5.text_input("Type Driver Name", key="ext_manual_drv")[cite: 2]
+                        final_extra_driver = extra_manual_driver.strip()[cite: 2]
                     elif extra_driver_sel == "Unassigned / Open":
-                        final_extra_driver = "UNASSIGNED"
+                        final_extra_driver = "UNASSIGNED"[cite: 2]
                     else:
-                        final_extra_driver = next((p[1] for p in extra_prio_reserves if p[0] == extra_driver_sel), "")
+                        final_extra_driver = next((p[1] for p in extra_prio_reserves if p[0] == extra_driver_sel), "")[cite: 2]
 
-                    extra_helper = ex_col6.text_input("Assigned Helper (Optional)", value="", key="ext_hlp_name")
+                    extra_helper = ex_col6.text_input("Assigned Helper (Optional)", value="", key="ext_hlp_name")[cite: 2]
 
                     if unassigned_vans:
-                        van_label_map = {v: format_van_with_size(v, fleet) for v in unassigned_vans}
-                        van_options_ext = ["AUTO-MATCH BEST FIT"] + unassigned_vans
+                        van_label_map = {v: format_van_with_size(v, fleet) for v in unassigned_vans}[cite: 2]
+                        van_options_ext = ["AUTO-MATCH BEST FIT"] + unassigned_vans[cite: 2]
                         extra_van_sel = ex_col7.selectbox(
-                            "Assign Van*", 
-                            options=van_options_ext, 
-                            format_func=lambda x: van_label_map.get(x, x) if x != "AUTO-MATCH BEST FIT" else "AUTO-MATCH BEST FIT",
-                            key="ext_van_sel"
+                            "Assign Van*", [cite: 2]
+                            options=van_options_ext,  [cite: 2]
+                            format_func=lambda x: van_label_map.get(x, x) if x != "AUTO-MATCH BEST FIT" else "AUTO-MATCH BEST FIT",[cite: 2]
+                            key="ext_van_sel"[cite: 2]
                         )
                     else:
-                        extra_van_sel = "NO VANS AVAILABLE"
-                        ex_col7.warning("No active unassigned vans!")
+                        extra_van_sel = "NO VANS AVAILABLE"[cite: 2]
+                        ex_col7.warning("No active unassigned vans!")[cite: 2]
 
-                    if st.button("➕ Append Extra Route to Roster", type="primary"):
+                    if st.button("➕ Append Extra Route to Roster", type="primary"):[cite: 2]
                         if not extra_route_code.strip():
-                            st.warning("Please enter a valid Route Code.")
+                            st.warning("Please enter a valid Route Code.")[cite: 2]
                         else:
-                            short_req = condense_service_type(extra_req_size)
+                            short_req = condense_service_type(extra_req_size)[cite: 2]
                             
                             if extra_van_sel == "AUTO-MATCH BEST FIT" and unassigned_vans:
-                                chosen_van = unassigned_vans[0]
+                                chosen_van = unassigned_vans[0][cite: 2]
                             elif extra_van_sel in unassigned_vans:
-                                chosen_van = extra_van_sel
+                                chosen_van = extra_van_sel[cite: 2]
                             else:
-                                chosen_van = "UNASSIGNED"
+                                chosen_van = "UNASSIGNED"[cite: 2]
 
                             if chosen_van != "UNASSIGNED" and chosen_van != "NO VANS AVAILABLE":
-                                van_matches = fleet[fleet['vehicleName'].astype(str).str.strip() == str(chosen_van).strip()] if 'vehicleName' in fleet.columns else pd.DataFrame()
-                                sel_st = str(van_matches.iloc[0].get('ST', 'M')).strip() if not van_matches.empty else 'M'
-                                pid, pnum = find_matching_phone(chosen_van, phone_map)
+                                van_matches = fleet[fleet['vehicleName'].astype(str).str.strip() == str(chosen_van).strip()] if 'vehicleName' in fleet.columns else pd.DataFrame()[cite: 2]
+                                sel_st = str(van_matches.iloc[0].get('ST', 'M')).strip() if not van_matches.empty else 'M'[cite: 2]
+                                pid, pnum = find_matching_phone(chosen_van, phone_map)[cite: 2]
                             else:
-                                sel_st = "N/A"
-                                pid, pnum = "", ""
+                                sel_st = "N/A"[cite: 2]
+                                pid, pnum = "", ""[cite: 2]
 
                             try:
-                                dep_dt = pd.to_datetime(extra_dep_time.strip(), format='mixed', errors='coerce')
+                                dep_dt = pd.to_datetime(extra_dep_time.strip(), format='mixed', errors='coerce')[cite: 2]
                                 if pd.isna(dep_dt):
-                                    dep_dt = pd.to_datetime(f"{pd.Timestamp.now().strftime('%Y-%m-%d')} {extra_dep_time.strip()}")
+                                    dep_dt = pd.to_datetime(f"{pd.Timestamp.now().strftime('%Y-%m-%d')} {extra_dep_time.strip()}")[cite: 2]
                                     
-                                wave_dt = dep_dt - pd.Timedelta(minutes=20)
-                                show_dt = wave_dt - pd.Timedelta(minutes=30)
-                                end_dt = show_dt + pd.Timedelta(hours=10)
+                                wave_dt = dep_dt - pd.Timedelta(minutes=20)[cite: 2]
+                                show_dt = wave_dt - pd.Timedelta(minutes=30)[cite: 2]
+                                end_dt = show_dt + pd.Timedelta(hours=10)[cite: 2]
 
-                                dep_str = dep_dt.strftime('%I:%M %p').lstrip('0')
-                                wave_str = wave_dt.strftime('%I:%M %p').lstrip('0')
-                                show_str = show_dt.strftime('%I:%M %p').lstrip('0')
-                                end_str = end_dt.strftime('%I:%M %p').lstrip('0')
+                                dep_str = dep_dt.strftime('%I:%M %p').lstrip('0')[cite: 2]
+                                wave_str = wave_dt.strftime('%I:%M %p').lstrip('0')[cite: 2]
+                                show_str = show_dt.strftime('%I:%M %p').lstrip('0')[cite: 2]
+                                end_str = end_dt.strftime('%I:%M %p').lstrip('0')[cite: 2]
                             except Exception:
-                                dep_str = extra_dep_time.strip()
-                                wave_str, show_str, end_str = 'N/A', 'N/A', 'N/A'
+                                dep_str = extra_dep_time.strip()[cite: 2]
+                                wave_str, show_str, end_str = 'N/A', 'N/A', 'N/A'[cite: 2]
 
                             new_extra_row = {
                                 'Route': str(extra_route_code.strip()),
@@ -470,131 +470,143 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
                                 'Remarks': 'EXTRA ROUTE / LATE ROUTE'
                             }
 
-                            updated_roster = pd.concat([roster_df, pd.DataFrame([new_extra_row])], ignore_index=True)
-                            log_dispatch_action(f"Appended Extra Route Offer '{extra_route_code.strip()}' (Driver: {final_extra_driver}, Van: {chosen_van}).", username=active_user)
-                            update_live_roster_fn(updated_roster, toast_msg=f"Appended Extra Route '{extra_route_code.strip()}'!")
-                            st.rerun()
+                            updated_roster = pd.concat([roster_df, pd.DataFrame([new_extra_row])], ignore_index=True)[cite: 2]
+                            log_dispatch_action(f"Appended Extra Route Offer '{extra_route_code.strip()}' (Driver: {final_extra_driver}, Van: {chosen_van}).", username=active_user)[cite: 2]
+                            update_live_roster_fn(updated_roster, toast_msg=f"Appended Extra Route '{extra_route_code.strip()}'!")[cite: 2]
+                            st.rerun()[cite: 2]
 
-                with st.expander("📍 Wave Pad Assignments (Assign Loading Pads by Wave Time)", expanded=True):
-                    roster_df = st.session_state['current_roster'].copy()
+                with st.expander("📍 Wave Pad Assignments (Assign Loading Pads by Wave Time)", expanded=True):[cite: 2]
+                    roster_df = st.session_state['current_roster'].copy()[cite: 2]
                     
-                    raw_waves = [w for w in roster_df['Wave'].unique() if str(w).strip() and str(w).strip().upper() != 'N/A']
+                    raw_waves = [w for w in roster_df['Wave'].unique() if str(w).strip() and str(w).strip().upper() != 'N/A'][cite: 2]
                     unique_waves = sorted(
-                        raw_waves,
-                        key=lambda x: pd.to_datetime(x, format='%I:%M %p', errors='coerce')
+                        raw_waves,[cite: 2]
+                        key=lambda x: pd.to_datetime(x, format='%I:%M %p', errors='coerce')[cite: 2]
                     )
                     
                     if unique_waves:
-                        st.caption("Assign today's loading pad (Pad A or Pad B) for each wave time received from warehouse staff.")
+                        st.caption("Assign today's loading pad (Pad A or Pad B) for each wave time received from warehouse staff.")[cite: 2]
                         
-                        wave_cols = st.columns(min(len(unique_waves), 4))
-                        pad_selections = {}
+                        wave_cols = st.columns(min(len(unique_waves), 4))[cite: 2]
+                        pad_selections = {}[cite: 2]
                         
                         for i, wave_time in enumerate(unique_waves):
-                            col_target = wave_cols[i % 4]
+                            col_target = wave_cols[i % 4][cite: 2]
                             with col_target:
-                                current_pad = roster_df[roster_df['Wave'] == wave_time]['Pad'].iloc[0] if not roster_df[roster_df['Wave'] == wave_time].empty else "Pad A"
-                                default_idx = 0 if "A" in str(current_pad) else 1
+                                current_pad = roster_df[roster_df['Wave'] == wave_time]['Pad'].iloc[0] if not roster_df[roster_df['Wave'] == wave_time].empty else "Pad A"[cite: 2]
+                                default_idx = 0 if "A" in str(current_pad) else 1[cite: 2]
                                 
                                 pad_selections[wave_time] = st.selectbox(
-                                    f"Wave {wave_time}",
-                                    options=["Pad A", "Pad B"],
-                                    index=default_idx,
-                                    key=f"pad_sel_{wave_time}"
+                                    f"Wave {wave_time}",[cite: 2]
+                                    options=["Pad A", "Pad B"],[cite: 2]
+                                    index=default_idx,[cite: 2]
+                                    key=f"pad_sel_{wave_time}"[cite: 2]
                                 )
                         
-                        if st.button("Apply Pad Assignments"):
+                        if st.button("Apply Pad Assignments"):[cite: 2]
                             for wave_time, chosen_pad in pad_selections.items():
-                                roster_df.loc[roster_df['Wave'] == wave_time, 'Pad'] = chosen_pad
+                                roster_df.loc[roster_df['Wave'] == wave_time, 'Pad'] = chosen_pad[cite: 2]
                             
-                            log_dispatch_action("Updated Wave Pad assignments across active roster.", username=active_user)
-                            update_live_roster_fn(roster_df, toast_msg="Loading pad assignments updated across roster!")
-                            st.rerun()
+                            log_dispatch_action("Updated Wave Pad assignments across active roster.", username=active_user)[cite: 2]
+                            update_live_roster_fn(roster_df, toast_msg="Loading pad assignments updated across roster!")[cite: 2]
+                            st.rerun()[cite: 2]
                     else:
-                        st.info("No active wave times available to assign pads.")
+                        st.info("No active wave times available to assign pads.")[cite: 2]
 
-                st.markdown("---")
-                st.subheader("Interactive Dispatch Roster")
+                st.markdown("---")[cite: 2]
+                st.subheader("Interactive Dispatch Roster")[cite: 2]
                 
-                if 'Remarks' in st.session_state['current_roster'].columns:
-                    st.session_state['current_roster']['Remarks'] = st.session_state['current_roster']['Remarks'].replace(['EXACT', 'EXACT MATCH'], '')
+                if 'Remarks' in st.session_state['current_roster'].columns:[cite: 2]
+                    st.session_state['current_roster']['Remarks'] = st.session_state['current_roster']['Remarks'].replace(['EXACT', 'EXACT MATCH'], '')[cite: 2]
 
-                if 'Helper' not in st.session_state['current_roster'].columns:
-                    driver_idx = st.session_state['current_roster'].columns.get_loc('Driver')
-                    st.session_state['current_roster'].insert(driver_idx + 1, 'Helper', '')
+                if 'Helper' not in st.session_state['current_roster'].columns:[cite: 2]
+                    driver_idx = st.session_state['current_roster'].columns.get_loc('Driver')[cite: 2]
+                    st.session_state['current_roster'].insert(driver_idx + 1, 'Helper', '')[cite: 2]
 
-                # UNASSIGNED PHONE FILTERING FOR DATA EDITOR
+                # UNASSIGNED PHONE FILTERING & NUMERIC SORTING FOR DATA EDITOR
                 active_phones = []
                 phone_number_lookup = {}
-                if phones is not None and not phones.empty:
-                    p_active = phones[~phones['status_clean'].isin(['INACTIVE', 'RETIRED', 'DELETED'])] if 'status_clean' in phones.columns else phones
-                    active_phones = list(p_active['device_clean'].unique())
-                    phone_number_lookup = dict(zip(p_active['device_clean'], p_active['number_clean']))
+                if phones is not None and not phones.empty:[cite: 2]
+                    p_active = phones[~phones['status_clean'].isin(['INACTIVE', 'RETIRED', 'DELETED'])] if 'status_clean' in phones.columns else phones[cite: 2]
+                    active_phones = list(p_active['device_clean'].unique())[cite: 2]
+                    phone_number_lookup = dict(zip(p_active['device_clean'], p_active['number_clean']))[cite: 2]
 
-                assigned_phones = [str(p).strip() for p in st.session_state['current_roster']['Phone ID'].dropna().unique() if str(p).strip()]
-                unassigned_phones = [p for p in active_phones if p not in assigned_phones]
+                assigned_phones = [str(p).strip() for p in st.session_state['current_roster']['Phone ID'].dropna().unique() if str(p).strip()][cite: 2]
                 
-                phone_options = [""] + sorted(list(set(unassigned_phones + assigned_phones)))
+                # Filter to unassigned phones only
+                unassigned_phones = [p for p in active_phones if p not in assigned_phones][cite: 2]
+                
+                # Sort numerically (with string fallback)
+                def try_int_sort(val):
+                    try:
+                        return int(''.join(filter(str.isdigit, str(val))))
+                    except ValueError:
+                        return str(val)
+
+                sorted_unassigned_phones = sorted(unassigned_phones, key=try_int_sort)
+                
+                # Keep currently assigned phone for the active row visible, plus all unassigned options
+                phone_options = [""] + sorted_unassigned_phones
 
                 def on_roster_change():
-                    changes = st.session_state.get("daily_roster_editor_state")
-                    if changes and "current_roster" in st.session_state:
+                    changes = st.session_state.get("daily_roster_editor_state")[cite: 2]
+                    if changes and "current_roster" in st.session_state:[cite: 2]
                         for row_idx, col_changes in changes.get("edited_rows", {}).items():
                             for col_name, new_val in col_changes.items():
-                                st.session_state['current_roster'].at[row_idx, col_name] = new_val
+                                st.session_state['current_roster'].at[row_idx, col_name] = new_val[cite: 2]
 
                         for row_idx, col_changes in changes.get("edited_rows", {}).items():
                             if "Phone ID" in col_changes:
-                                dev_id = str(col_changes["Phone ID"]).strip()
-                                st.session_state['current_roster'].at[row_idx, 'Phone Number'] = phone_number_lookup.get(dev_id, "")
+                                dev_id = str(col_changes["Phone ID"]).strip()[cite: 2]
+                                st.session_state['current_roster'].at[row_idx, 'Phone Number'] = phone_number_lookup.get(dev_id, "")[cite: 2]
 
-                        update_closing_checklist_assignments(st.session_state['current_roster'], st.session_state)
-                        now_filename = f"roster_{pd.Timestamp.now().strftime('%Y-%m-%d_%H%M')}.xlsx"
-                        save_snapshot_file(st.session_state['current_roster'], now_filename)
+                        update_closing_checklist_assignments(st.session_state['current_roster'], st.session_state)[cite: 2]
+                        now_filename = f"roster_{pd.Timestamp.now().strftime('%Y-%m-%d_%H%M')}.xlsx"[cite: 2]
+                        save_snapshot_file(st.session_state['current_roster'], now_filename)[cite: 2]
 
                 roster_config = {
-                    "Route": st.column_config.TextColumn("Route", width="small"),
-                    "Req Size": st.column_config.TextColumn("Req Size", width="small"),
-                    "Van Bumper": st.column_config.TextColumn("Van Bumper", width="small"),
-                    "Sel Size": st.column_config.TextColumn("Sel Size", width="small"),
-                    "Driver": st.column_config.TextColumn("Driver", width="medium"),
-                    "Helper": st.column_config.TextColumn("Helper", width="medium"),
-                    "Wave": st.column_config.TextColumn("Wave", width="small"),
-                    "Pad": st.column_config.TextColumn("Pad", width="small"),
-                    "Departure": st.column_config.TextColumn("Departure", width="small"),
-                    "Phone ID": st.column_config.SelectboxColumn("Phone ID", options=phone_options, required=False, width="small"),
-                    "Phone Number": st.column_config.TextColumn("Phone Number", width="medium"),
-                    "Show Time": st.column_config.TextColumn("Show Time", width="small"),
-                    "Shift End": st.column_config.TextColumn("Shift End", width="small"),
-                    "Remarks": st.column_config.TextColumn("Remarks", width="medium")
+                    "Route": st.column_config.TextColumn("Route", width="small"),[cite: 2]
+                    "Req Size": st.column_config.TextColumn("Req Size", width="small"),[cite: 2]
+                    "Van Bumper": st.column_config.TextColumn("Van Bumper", width="small"),[cite: 2]
+                    "Sel Size": st.column_config.TextColumn("Sel Size", width="small"),[cite: 2]
+                    "Driver": st.column_config.TextColumn("Driver", width="medium"),[cite: 2]
+                    "Helper": st.column_config.TextColumn("Helper", width="medium"),[cite: 2]
+                    "Wave": st.column_config.TextColumn("Wave", width="small"),[cite: 2]
+                    "Pad": st.column_config.TextColumn("Pad", width="small"),[cite: 2]
+                    "Departure": st.column_config.TextColumn("Departure", width="small"),[cite: 2]
+                    "Phone ID": st.column_config.SelectboxColumn("Phone ID", options=phone_options, required=False, width="small"),[cite: 2]
+                    "Phone Number": st.column_config.TextColumn("Phone Number", width="medium"),[cite: 2]
+                    "Show Time": st.column_config.TextColumn("Show Time", width="small"),[cite: 2]
+                    "Shift End": st.column_config.TextColumn("Shift End", width="small"),[cite: 2]
+                    "Remarks": st.column_config.TextColumn("Remarks", width="medium")[cite: 2]
                 }
 
                 st.data_editor(
-                    st.session_state['current_roster'],
-                    column_config=roster_config,
-                    use_container_width=True,
-                    num_rows="fixed",
-                    hide_index=True,
-                    key="daily_roster_editor_state",
-                    on_change=on_roster_change
+                    st.session_state['current_roster'],[cite: 2]
+                    column_config=roster_config,[cite: 2]
+                    use_container_width=True,[cite: 2]
+                    num_rows="fixed",[cite: 2]
+                    hide_index=True,[cite: 2]
+                    key="daily_roster_editor_state",[cite: 2]
+                    on_change=on_roster_change[cite: 2]
                 )
 
-                printable_roster = get_sorted_roster(st.session_state['current_roster'])
+                printable_roster = get_sorted_roster(st.session_state['current_roster'])[cite: 2]
 
-                st.markdown("---")
-                st.subheader("🖨️ Clipboard Print Preview (Sorted by Wave & First Name)")
+                st.markdown("---")[cite: 2]
+                st.subheader("🖨️ Clipboard Print Preview (Sorted by Wave & First Name)")[cite: 2]
                 
-                html_view = generate_printable_html(printable_roster)
-                components.html(html_view, height=500, scrolling=True)
+                html_view = generate_printable_html(printable_roster)[cite: 2]
+                components.html(html_view, height=500, scrolling=True)[cite: 2]
 
-                csv = printable_roster.to_csv(index=False).encode('utf-8')
+                csv = printable_roster.to_csv(index=False).encode('utf-8')[cite: 2]
                 st.download_button(
-                    label="📥 Export Roster CSV (For Records/Archiving)",
-                    data=csv,
-                    file_name="daily_dispatch_roster.csv",
-                    mime="text/csv"
+                    label="📥 Export Roster CSV (For Records/Archiving)",[cite: 2]
+                    data=csv,[cite: 2]
+                    file_name="daily_dispatch_roster.csv",[cite: 2]
+                    mime="text/csv"[cite: 2]
                 )
         else:
-            st.info("Upload today's Cortex route export in the sidebar to run auto-assignments or load a historical roster.")
+            st.info("Upload today's Cortex route export in the sidebar to run auto-assignments or load a historical roster.")[cite: 2]
     else:
-        st.warning(f"No local `{MASTER_FLEET_PATH}` file found in your project folder.")
+        st.warning(f"No local `{MASTER_FLEET_PATH}` file found in your project folder.")[cite: 2]
