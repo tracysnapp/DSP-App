@@ -545,11 +545,25 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
 
                 sorted_unassigned_phones = sorted(unassigned_phones, key=try_int_sort)
                 
-                # FIX: Streamlit Data Editor expects a fixed options list per column. 
-                # To ensure currently assigned phone IDs don't render blank, we include 
-                # all currently assigned phones into the available global selectbox options list.
-                all_valid_options = sorted(list(set(sorted_unassigned_phones + assigned_phones)), key=try_int_sort)
-                phone_options = [""] + all_valid_options
+                # Quick-Assign Expander for clean dropdown selection of unassigned phones
+                with st.expander("📱 Quick Assign Unassigned Phone to Route", expanded=False):
+                    qa_col1, qa_col2, qa_col3 = st.columns([2, 2, 1])
+                    qa_route_opts = [f"Route: {r} (Driver: {d})" for r, d in zip(st.session_state['current_roster']['Route'], st.session_state['current_roster']['Driver'])]
+                    qa_sel_route = qa_col1.selectbox("Select Route / Driver", options=qa_route_opts, key="qa_route_sel")
+                    
+                    qa_sel_phone = qa_col2.selectbox("Select Unassigned Phone ID", options=[""] + sorted_unassigned_phones, key="qa_phone_sel")
+                    
+                    if qa_col3.button("Assign Phone", type="primary"):
+                        if qa_sel_route and qa_sel_phone:
+                            matched_idx = qa_route_opts.index(qa_sel_route)
+                            st.session_state['current_roster'].at[matched_idx, 'Phone ID'] = str(qa_sel_phone)
+                            st.session_state['current_roster'].at[matched_idx, 'Phone Number'] = phone_number_lookup.get(str(qa_sel_phone), "")
+                            
+                            update_closing_checklist_assignments(st.session_state['current_roster'], st.session_state)
+                            now_filename = f"roster_{pd.Timestamp.now().strftime('%Y-%m-%d_%H%M')}.xlsx"
+                            save_snapshot_file(st.session_state['current_roster'], now_filename)
+                            st.toast(f"Assigned Phone {qa_sel_phone}!", icon="📱")
+                            st.rerun()
 
                 def on_roster_change():
                     changes = st.session_state.get("daily_roster_editor_state")
@@ -577,7 +591,7 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
                     "Wave": st.column_config.TextColumn("Wave", width="small"),
                     "Pad": st.column_config.TextColumn("Pad", width="small"),
                     "Departure": st.column_config.TextColumn("Departure", width="small"),
-                    "Phone ID": st.column_config.SelectboxColumn("Phone ID", options=phone_options, required=False, width="small"),
+                    "Phone ID": st.column_config.TextColumn("Phone ID", width="small"), # Handled via text display / quick assign expander above
                     "Phone Number": st.column_config.TextColumn("Phone Number", width="medium"),
                     "Show Time": st.column_config.TextColumn("Show Time", width="small"),
                     "Shift End": st.column_config.TextColumn("Shift End", width="small"),
