@@ -485,7 +485,7 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
                     )
                     
                     if unique_waves:
-                        st.caption("Assign today's loading pad (Pad A or Pad B) for each wave time received from warehouse staff.")
+                        st.caption("Assign today's loading pad (Pad A or Pad B) for each wave time received from warehouse stage workers.")
                         
                         wave_cols = st.columns(min(len(unique_waves), 4))
                         pad_selections = {}
@@ -523,7 +523,7 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
                     driver_idx = st.session_state['current_roster'].columns.get_loc('Driver')
                     st.session_state['current_roster'].insert(driver_idx + 1, 'Helper', '')
 
-                # UNASSIGNED PHONE FILTERING & NUMERIC SORTING FOR DATA EDITOR
+                # UNASSIGNED PHONE FILTERING & NUMERIC SORTING
                 active_phones = []
                 phone_number_lookup = {}
                 if phones is not None and not phones.empty:
@@ -533,36 +533,50 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
 
                 assigned_phones = [str(p).strip() for p in st.session_state['current_roster']['Phone ID'].dropna().unique() if str(p).strip()]
                 
-                # Filter to unassigned phones only
-                unassigned_phones = [p for p in active_phones if p not in assigned_phones]
-                
-                # Sort numerically (with string fallback)
                 def try_int_sort(val):
                     try:
                         return int(''.join(filter(str.isdigit, str(val))))
                     except ValueError:
                         return str(val)
 
+                unassigned_phones = [p for p in active_phones if p not in assigned_phones]
                 sorted_unassigned_phones = sorted(unassigned_phones, key=try_int_sort)
-                
-                # Quick-Assign Expander for clean dropdown selection of unassigned phones
-                with st.expander("📱 Quick Assign Unassigned Phone to Route", expanded=False):
-                    qa_col1, qa_col2, qa_col3 = st.columns([2, 2, 1])
-                    qa_route_opts = [f"Route: {r} (Driver: {d})" for r, d in zip(st.session_state['current_roster']['Route'], st.session_state['current_roster']['Driver'])]
-                    qa_sel_route = qa_col1.selectbox("Select Route / Driver", options=qa_route_opts, key="qa_route_sel")
-                    
-                    qa_sel_phone = qa_col2.selectbox("Select Unassigned Phone ID", options=[""] + sorted_unassigned_phones, key="qa_phone_sel")
-                    
-                    if qa_col3.button("Assign Phone", type="primary"):
-                        if qa_sel_route and qa_sel_phone:
-                            matched_idx = qa_route_opts.index(qa_sel_route)
-                            st.session_state['current_roster'].at[matched_idx, 'Phone ID'] = str(qa_sel_phone)
-                            st.session_state['current_roster'].at[matched_idx, 'Phone Number'] = phone_number_lookup.get(str(qa_sel_phone), "")
-                            
+
+                # DEDICATED PHONE ASSIGNMENT TOOLBAR (Ensures dropdowns show ONLY unassigned phones per route)
+                with st.expander("📱 Manage Route Phone Assignments (Unassigned Pool Only)", expanded=False):
+                    st.caption("Select a route below to assign or change its phone ID using only available unassigned phones.")
+                    for idx, row in st.session_state['current_roster'].iterrows():
+                        rt_code = row.get('Route', 'N/A')
+                        drv_name = row.get('Driver', 'Unassigned')
+                        curr_phone = str(row.get('Phone ID', '')).strip()
+                        
+                        # Options for this specific route: Current assigned phone (if any) + all strictly unassigned phones
+                        row_phone_options = [""]
+                        if curr_phone and curr_phone not in row_phone_options:
+                            row_phone_options.append(curr_phone)
+                        for up in sorted_unassigned_phones:
+                            if up not in row_phone_options:
+                                row_phone_options.append(up)
+                        
+                        default_index = row_phone_options.index(curr_phone) if curr_phone in row_phone_options else 0
+
+                        p_col1, p_col2, p_col3 = st.columns([2, 2, 1])
+                        p_col1.markdown(f"**Route:** {rt_code} | **Driver:** {drv_name}")
+                        
+                        selected_new_phone = p_col2.selectbox(
+                            f"Phone for {rt_code}",
+                            options=row_phone_options,
+                            index=default_index,
+                            key=f"phone_assign_row_{idx}",
+                            label_visibility="collapsed"
+                        )
+                        
+                        if selected_new_phone != curr_phone:
+                            st.session_state['current_roster'].at[idx, 'Phone ID'] = selected_new_phone
+                            st.session_state['current_roster'].at[idx, 'Phone Number'] = phone_number_lookup.get(selected_new_phone, "")
                             update_closing_checklist_assignments(st.session_state['current_roster'], st.session_state)
                             now_filename = f"roster_{pd.Timestamp.now().strftime('%Y-%m-%d_%H%M')}.xlsx"
                             save_snapshot_file(st.session_state['current_roster'], now_filename)
-                            st.toast(f"Assigned Phone {qa_sel_phone}!", icon="📱")
                             st.rerun()
 
                 def on_roster_change():
@@ -591,7 +605,7 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
                     "Wave": st.column_config.TextColumn("Wave", width="small"),
                     "Pad": st.column_config.TextColumn("Pad", width="small"),
                     "Departure": st.column_config.TextColumn("Departure", width="small"),
-                    "Phone ID": st.column_config.TextColumn("Phone ID", width="small"), # Handled via text display / quick assign expander above
+                    "Phone ID": st.column_config.TextColumn("Phone ID", width="small"),
                     "Phone Number": st.column_config.TextColumn("Phone Number", width="medium"),
                     "Show Time": st.column_config.TextColumn("Show Time", width="small"),
                     "Shift End": st.column_config.TextColumn("Shift End", width="small"),
