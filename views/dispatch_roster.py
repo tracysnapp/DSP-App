@@ -545,8 +545,11 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
 
                 sorted_unassigned_phones = sorted(unassigned_phones, key=try_int_sort)
                 
-                # Keep currently assigned phone for the active row visible, plus all unassigned options
-                phone_options = [""] + sorted_unassigned_phones
+                # FIX: Streamlit Data Editor expects a fixed options list per column. 
+                # To ensure currently assigned phone IDs don't render blank, we include 
+                # all currently assigned phones into the available global selectbox options list.
+                all_valid_options = sorted(list(set(sorted_unassigned_phones + assigned_phones)), key=try_int_sort)
+                phone_options = [""] + all_valid_options
 
                 def on_roster_change():
                     changes = st.session_state.get("daily_roster_editor_state")
