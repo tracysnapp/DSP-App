@@ -27,13 +27,32 @@ def render_scheduler_tab():
     # TAB 1: WEEKLY SHIFT SCHEDULER
     # ==========================================
     with tab_weekly:
-        c_date, c_routes = st.columns(2)
+        c_date, c_info = st.columns([1, 2])
         with c_date:
             start_date = st.date_input("Schedule Start Date (Sunday)", key="sched_start_date")
             week_label = f"{start_date.strftime('%d-%b')} to {(start_date + timedelta(days=6)).strftime('%d-%b')}"
             st.caption(f"**Week Label:** {week_label}")
-        with c_routes:
-            expected_routes = st.number_input("Expected Daily Routes (Station Target)", min_value=0, value=25, key="sched_expected_routes")
+        with c_info:
+            st.markdown("### 🎯 Daily Route Targets (Amazon Station Volume)")
+            st.caption("Adjust expected route counts per day to match fluctuating station volume.")
+
+        days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+        
+        # 7-day target inputs
+        target_cols = st.columns(7)
+        expected_routes_dict = {}
+        
+        # Default typical wave targets if none stored yet
+        default_targets = {"Sun": 26, "Mon": 25, "Tue": 25, "Wed": 28, "Thu": 24, "Fri": 24, "Sat": 24}
+        
+        for i, day in enumerate(days):
+            with target_cols[i]:
+                expected_routes_dict[day] = st.number_input(
+                    day, 
+                    min_value=0, 
+                    value=default_targets.get(day, 25), 
+                    key=f"target_route_{day}"
+                )
 
         if 'schedule_df' not in st.session_state or st.session_state['schedule_df'] is None or st.session_state['schedule_df'].empty:
             loaded_sch = load_local_schedule()
@@ -66,13 +85,13 @@ def render_scheduler_tab():
                         if col_name in st.session_state['schedule_df'].columns:
                             st.session_state['schedule_df'].at[row_idx, col_name] = new_val
 
-        st.markdown("### 📊 Daily Coverage vs. Station Targets")
-        days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+        st.markdown("### 📊 Live Coverage vs. Station Targets")
         metrics_cols = st.columns(7)
         
         for i, day in enumerate(days):
             driver_count = len(st.session_state['schedule_df'][st.session_state['schedule_df'][day] == "Driver"])
-            delta = driver_count - expected_routes
+            day_target = expected_routes_dict[day]
+            delta = driver_count - day_target
             metrics_cols[i].metric(label=day, value=driver_count, delta=delta)
 
         df_display = st.session_state['schedule_df'].copy()
@@ -142,12 +161,10 @@ def render_scheduler_tab():
         if 'pto_df' not in st.session_state:
             st.session_state['pto_df'] = load_long_range_pto()
 
-        # Quick add form
         with st.form("pto_entry_form", clear_on_submit=True):
             st.markdown("#### Log New Request")
             f_col1, f_col2, f_col3, f_col4 = st.columns(4)
             
-            # Get driver list names
             driver_names = []
             if drivers_df is not None and 'Driver Name' in drivers_df.columns:
                 driver_names = sorted(drivers_df['Driver Name'].dropna().unique().tolist())
@@ -159,9 +176,9 @@ def render_scheduler_tab():
             with f_col1:
                 sel_driver = st.selectbox("Driver Name", options=driver_names)
             with f_col2:
-                start_p_date = st.date_input("Start Date", value=datetime.today())
+                start_p_date = st.date_input("Start Date", value=datetime.today(), key="pto_start_input")
             with f_col3:
-                end_p_date = st.date_input("End Date", value=datetime.today())
+                end_p_date = st.date_input("End Date", value=datetime.today(), key="pto_end_input")
             with f_col4:
                 category = st.selectbox("Category", options=["Approved PTO", "Unpaid Leave", "Appointment / Partial Off", "No Sundays", "Other Constraint"])
             
@@ -178,7 +195,6 @@ def render_scheduler_tab():
                 }
                 st.session_state['pto_df'] = pd.concat([st.session_state['pto_df'], pd.DataFrame([new_row])], ignore_index=True)
                 
-                # Ensure directory exists and save
                 os.makedirs(os.path.dirname(LONG_RANGE_PTO_PATH), exist_ok=True)
                 st.session_state['pto_df'].to_csv(LONG_RANGE_PTO_PATH, index=False)
                 log_dispatch_action(f"Added long-range PTO request for {sel_driver} ({start_p_date} to {end_p_date}).", username=active_user)
