@@ -10,7 +10,11 @@ LONG_RANGE_PTO_PATH = "data/long_range_pto.csv"
 def load_long_range_pto():
     if os.path.exists(LONG_RANGE_PTO_PATH):
         try:
-            return pd.read_csv(LONG_RANGE_PTO_PATH)
+            df = pd.read_csv(LONG_RANGE_PTO_PATH)
+            # Force all columns to string to prevent dtype mismatch errors in st.data_editor
+            for col in df.columns:
+                df[col] = df[col].astype(str).replace('nan', '')
+            return df
         except Exception:
             pass
     return pd.DataFrame(columns=["Driver Name", "Start Date", "End Date", "Category", "Reason / Notes"])
@@ -23,7 +27,6 @@ def render_scheduler_tab():
     drivers_df = st.session_state.get('drivers_df')
     active_user = st.session_state.get('user_name', 'Admin')
 
-    # Ensure long-range PTO is loaded in session state for cross-referencing
     if 'pto_df' not in st.session_state:
         st.session_state['pto_df'] = load_long_range_pto()
 
@@ -41,8 +44,6 @@ def render_scheduler_tab():
             st.caption("Adjust expected route counts per day to match fluctuating station volume.")
 
         days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
-        
-        # Build list of datetime objects for the current week starting Sunday
         week_dates = [start_date + timedelta(days=i) for i in range(7)]
         
         target_cols = st.columns(7)
@@ -63,8 +64,6 @@ def render_scheduler_tab():
             if loaded_sch.empty and drivers_df is not None and not drivers_df.empty:
                 active_drivers = drivers_df[drivers_df['Status'] == 'ACTIVE'] if 'Status' in drivers_df.columns else drivers_df
                 init_sch = []
-                
-                # Fetch active PTO database for cross-referencing
                 pto_data = st.session_state['pto_df']
                 
                 for _, row in active_drivers.iterrows():
@@ -82,7 +81,6 @@ def render_scheduler_tab():
                         "Notes / Requests": ""
                     }
                     
-                    # Check long-range calendar constraints for this driver during this week
                     if not pto_data.empty:
                         driver_ptos = pto_data[pto_data['Driver Name'].astype(str).str.strip().str.lower() == combined_name.lower()]
                         notes_list = []
@@ -94,7 +92,6 @@ def render_scheduler_tab():
                                 cat = str(pto_row['Category'])
                                 note = str(pto_row['Reason / Notes'])
                                 
-                                # Check each day of the target week against this PTO window
                                 for idx, d_date in enumerate(week_dates):
                                     day_key = days[idx]
                                     if p_start <= d_date <= p_end:
@@ -226,18 +223,21 @@ def render_scheduler_tab():
             submitted_pto = st.form_submit_button("➕ Add to Long-Range Calendar", type="primary")
             if submitted_pto:
                 new_row = {
-                    "Driver Name": sel_driver,
+                    "Driver Name": str(sel_driver),
                     "Start Date": start_p_date.strftime("%Y-%m-%d"),
                     "End Date": end_p_date.strftime("%Y-%m-%d"),
-                    "Category": category,
-                    "Reason / Notes": reason_notes
+                    "Category": str(category),
+                    "Reason / Notes": str(reason_notes)
                 }
                 st.session_state['pto_df'] = pd.concat([st.session_state['pto_df'], pd.DataFrame([new_row])], ignore_index=True)
                 
+                # Ensure string types on append
+                for col in st.session_state['pto_df'].columns:
+                    st.session_state['pto_df'][col] = st.session_state['pto_df'][col].astype(str).replace('nan', '')
+
                 os.makedirs(os.path.dirname(LONG_RANGE_PTO_PATH), exist_ok=True)
                 st.session_state['pto_df'].to_csv(LONG_RANGE_PTO_PATH, index=False)
                 
-                # Clear cached weekly schedule so it regenerates with the new PTO sync
                 if 'schedule_df' in st.session_state:
                     del st.session_state['schedule_df']
 
@@ -252,7 +252,7 @@ def render_scheduler_tab():
             if changes and "pto_df" in st.session_state:
                 for row_idx, col_changes in changes.get("edited_rows", {}).items():
                     for col_name, new_val in col_changes.items():
-                        st.session_state['pto_df'].at[row_idx, col_name] = new_val
+                        st.session_state['pto_df'].at[row_idx, col_name] = str(new_val)
 
         pto_config = {
             "Driver Name": st.column_config.TextColumn("Driver Name"),
@@ -263,7 +263,7 @@ def render_scheduler_tab():
         }
 
         edited_pto_df = st.data_editor(
-            st.session_state['schedule_df'] if False else st.session_state['pto_df'], # keeps reference cleanly bound
+            st.session_state['pto_df'],
             column_config=pto_config,
             use_container_width=True,
             num_rows="dynamic",
@@ -275,11 +275,13 @@ def render_scheduler_tab():
         c_p1, c_p2 = st.columns(2)
         with c_p1:
             if st.button("💾 Save Long-Range Calendar to Disk", type="primary", key="save_pto_disk"):
+                for col in edited_pto_df.columns:
+                    edited_pto_df[col] = edited_pto_df[col].astype(str).replace('nan', '')
+                
                 os.makedirs(os.path.dirname(LONG_RANGE_PTO_PATH), exist_ok=True)
                 edited_pto_df.to_csv(LONG_RANGE_PTO_PATH, index=False)
                 st.session_state['pto_df'] = edited_pto_df.copy()
                 
-                # Clear weekly schedule cache so it rebuilds with updated PTO ranges
                 if 'schedule_df' in st.session_state:
                     del st.session_state['schedule_df']
 
