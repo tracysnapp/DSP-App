@@ -1,7 +1,8 @@
 import pandas as pd
+import streamlit as st
+import streamlit.components.v1 as components
 from engine import log_dispatch_action, save_daily_closing_checklist
 from modules.roster import update_closing_checklist_assignments
-import streamlit as st
 
 
 def render_closing_checklist_tab():
@@ -12,11 +13,12 @@ def render_closing_checklist_tab():
       """
         <style>
         @media print {
-            .stButton, [data-testid="stSidebar"] {
+            .stButton, [data-testid="stSidebar"], header, footer {
                 display: none !important;
+                visibility: hidden !important;
             }
-            header, footer {
-                visibility: hidden;
+            body {
+                background: white;
             }
         }
         </style>
@@ -62,15 +64,32 @@ def render_closing_checklist_tab():
     with c1:
       st.caption("Track return of equipment, gas level, and route debrief status.")
     with c2:
-      if st.button("🖨️ Print Checklist", use_container_width=True):
-        st.markdown(
-            """
-                    <script>
-                        window.print();
-                    </script>
-                    """,
-            unsafe_allow_html=True,
-        )
+      # Robust Print Button via HTML Component iframe
+      components.html(
+          """
+            <style>
+                .print-btn {
+                    background-color: #007bff;
+                    color: white;
+                    padding: 8px 16px;
+                    border: none;
+                    border-radius: 4px;
+                    cursor: pointer;
+                    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+                    font-size: 14px;
+                    font-weight: 500;
+                    width: 100%;
+                    text-align: center;
+                    box-shadow: 0 1px 3px rgba(0,0,0,0.12);
+                }
+                .print-btn:hover {
+                    background-color: #0056b3;
+                }
+            </style>
+            <button class="print-btn" onclick="window.parent.print()">🖨️ Print Checklist</button>
+            """,
+          height=45,
+      )
     with c3:
       if st.button(
           "💾 Save Debrief Updates", type="primary", use_container_width=True
