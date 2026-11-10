@@ -2,6 +2,7 @@ import datetime
 import io
 import logging
 import os
+import re
 import tempfile
 from google.cloud import storage
 import pandas as pd
@@ -17,7 +18,6 @@ except ImportError:
 # ---------------------------------------------------------
 # CONFIGURATION & STORAGE ABSTRACTION
 # ---------------------------------------------------------
-# Auto-detect Cloud Run container runtime or fall back to environment variable
 K_SERVICE = os.getenv("K_SERVICE")
 if K_SERVICE:
   STORAGE_MODE = "CLOUD"
@@ -26,7 +26,6 @@ else:
 
 GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "dsp-app-storage")
 
-# Storage Object Paths / Keys inside GCS or local disk
 MASTER_FLEET_PATH = os.getenv("MASTER_FLEET_PATH", "master_fleet.xlsx")
 MASTER_PHONES_PATH = os.getenv("MASTER_PHONES_PATH", "master_phones.xlsx")
 CLOSING_CHECKLIST_PATH = os.getenv(
@@ -42,7 +41,6 @@ HISTORY_DIR = os.getenv("HISTORY_DIR", "history")
 LOG_FILE_PATH = os.getenv("DISPATCH_LOG_PATH", "dispatch_audit.log")
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
 
-# User Credentials
 ADMIN_USER = os.getenv("ADMIN_USER", "admin")
 ADMIN_PASS = os.getenv("ADMIN_PASS")
 DISPATCH_USER = os.getenv("DISPATCH_USER", "dispatch")
@@ -83,18 +81,15 @@ def log_dispatch_action(action_msg, username="System"):
 # ---------------------------------------------------------
 @st.cache_resource
 def get_gcs_client():
-  """Returns an authenticated GCS client using default container credentials."""
   return storage.Client()
 
 
 def get_gcs_bucket():
-  """Retrieves the target GCS bucket instance."""
   client = get_gcs_client()
   return client.bucket(GCS_BUCKET_NAME)
 
 
 def read_gcs_dataframe(blob_path: str) -> pd.DataFrame:
-  """Reads an Excel or CSV file directly from GCS into a DataFrame without touching local disk."""
   try:
     bucket = get_gcs_bucket()
     blob = bucket.blob(blob_path)
@@ -113,7 +108,6 @@ def read_gcs_dataframe(blob_path: str) -> pd.DataFrame:
 
 
 def save_gcs_dataframe(df: pd.DataFrame, blob_path: str):
-  """Writes a DataFrame to GCS as an Excel or CSV file in-memory."""
   if df is None or df.empty:
     return
 
@@ -137,11 +131,7 @@ def save_gcs_dataframe(df: pd.DataFrame, blob_path: str):
     print(f"Error saving {blob_path} to GCS: {e}")
 
 
-# ---------------------------------------------------------
-# DUAL-MODE STORAGE DISPATCHERS (GCS / LOCAL FALLBACK)
-# ---------------------------------------------------------
 def safe_save_dataframe(df, file_path):
-  """Saves a DataFrame to Cloud Storage (if enabled) or local disk atomically."""
   if df is None or df.empty:
     return
 
@@ -149,7 +139,6 @@ def safe_save_dataframe(df, file_path):
     save_gcs_dataframe(df, file_path)
     return
 
-  # Local disk fallback
   dir_name = os.path.dirname(file_path)
   if dir_name and not os.path.exists(dir_name):
     os.makedirs(dir_name, exist_ok=True)
@@ -173,7 +162,6 @@ def safe_save_dataframe(df, file_path):
 
 
 def load_dataframe_auto(file_path: str) -> pd.DataFrame:
-  """Reads a DataFrame from Cloud Storage or Local disk depending on environment."""
   if STORAGE_MODE == "CLOUD":
     return read_gcs_dataframe(file_path)
 
@@ -209,13 +197,11 @@ def authenticate_user(username, password):
 
 
 def ensure_history_dir():
-  """No-op on Cloud Storage; ensures folder path locally."""
   if STORAGE_MODE == "LOCAL" and not os.path.exists(HISTORY_DIR):
     os.makedirs(HISTORY_DIR, exist_ok=True)
 
 
 def cleanup_old_snapshots(days_to_keep=30):
-  """Purges snapshots older than days_to_keep in Cloud Storage or local disk."""
   cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(
       days=days_to_keep
   )
@@ -237,7 +223,6 @@ def cleanup_old_snapshots(days_to_keep=30):
       print(f"Error cleaning up GCS snapshots: {e}")
     return
 
-  # Local Cleanup Fallback
   if os.path.exists(HISTORY_DIR):
     now = datetime.datetime.now()
     local_cutoff = datetime.timedelta(days=days_to_keep)
@@ -304,15 +289,35 @@ def list_snapshot_files():
 
 
 def load_snapshot_file(filename):
-  """Loads a historical roster snapshot from storage and sanitizes NaN values for clean rendering."""
   blob_path = f"{HISTORY_DIR}/{filename}"
   df = load_dataframe_auto(blob_path)
   if not df.empty:
-    # Fill missing values with empty strings first, then convert to str
     df_clean = df.fillna("").astype(str)
-    # Replace string representations of NaN / null values with empty strings
     return df_clean.replace(["nan", "NaN", "None", "<NA>"], "")
   return df
+
+
+def get_van_last_driven_dict():
+  """Scans historical roster snapshots to calculate the last date each van was driven."""
+  snapshot_files = list_snapshot_files()
+  van_last_date = {}
+
+  for fname in snapshot_files:
+    match = re.search(r"roster_(\d{4}-\d{2}-\d{2})", fname)
+    if match:
+      date_str = match.group(1)
+      try:
+        snapshot_date = pd.to_datetime(date_str).date()
+        df = load_snapshot_file(fname)
+        if not df.empty and "Van Bumper" in df.columns:
+          bumpers = df["Van Bumper"].dropna().astype(str).str.strip().unique()
+          for b in bumpers:
+            if b and b.upper() not in ["NAN", "NONE", "", "UNASSIGNED", "N/A"]:
+              if b not in van_last_date or snapshot_date > van_last_date[b]:
+                van_last_date[b] = snapshot_date
+      except Exception:
+        continue
+  return van_last_date
 
 
 def process_access_data(access_df):
@@ -358,9 +363,6 @@ def process_access_data(access_df):
   return out_df
 
 
-# ---------------------------------------------------------
-# DATASET LOADERS & CACHING
-# ---------------------------------------------------------
 @st.cache_data(ttl=60, show_spinner=False)
 def load_local_fleet():
   df = load_dataframe_auto(MASTER_FLEET_PATH)
@@ -502,7 +504,6 @@ def save_driver_incident(
     logged_by,
     notes,
 ):
-  """Appends a new driving or behavior incident record atomically to storage and clears cache."""
   incidents_df = load_local_incidents_log()
   new_record = {
       "Date": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M"),
@@ -518,8 +519,5 @@ def save_driver_incident(
       [incidents_df, pd.DataFrame([new_record])], ignore_index=True
   )
   safe_save_dataframe(updated_df, INCIDENTS_LOG_PATH)
-
-  # Invalidate cache so UI reads updated log immediately
   load_local_incidents_log.clear()
-
   return updated_df
