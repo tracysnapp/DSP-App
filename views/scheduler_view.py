@@ -7,6 +7,13 @@ import os
 
 LONG_RANGE_PTO_PATH = "data/long_range_pto.csv"
 
+def get_amazon_week_dates(year, week_num):
+    """Calculates the Sunday start date for a given Amazon week number (1-52)."""
+    jan_4 = datetime(year, 1, 4)
+    week_1_sun = jan_4 - timedelta(days=(jan_4.weekday() + 1) % 7)
+    target_sun = week_1_sun + timedelta(weeks=week_num - 1)
+    return target_sun.date()
+
 def load_long_range_pto():
     if os.path.exists(LONG_RANGE_PTO_PATH):
         try:
@@ -31,24 +38,33 @@ def render_scheduler_tab():
         st.session_state['pto_df'] = load_long_range_pto()
 
     # ==========================================
-    # TAB 1: WEEKLY SHIFT SCHEDULER
+    # TAB 1: WEEKLY SHIFT SCHEDULER (AMAZON WEEKS 1-52)
     # ==========================================
     with tab_weekly:
         c_date, c_info = st.columns([1, 2])
         with c_date:
-            start_date = st.date_input("Schedule Start Date (Sunday)", key="sched_start_date")
-            week_label = f"{start_date.strftime('%d-%b')} to {(start_date + timedelta(days=6)).strftime('%d-%b')}"
-            st.caption(f"**Week Label:** {week_label}")
+            current_year = datetime.today().year
+            current_week_num = datetime.today().isocalendar()[1]
+            
+            sel_year = st.selectbox("Operating Year", options=[current_year - 1, current_year, current_year + 1], index=1)
+            sel_amazon_week = st.number_input("Amazon Operating Week #", min_value=1, max_value=52, value=current_week_num, step=1)
+            
+            # Sunday through Friday operational layout
+            start_date = get_amazon_week_dates(sel_year, int(sel_amazon_week))
+            week_dates = [start_date + timedelta(days=i) for i in range(7)]
+            
+            week_label = f"Amazon Week {sel_amazon_week} ({start_date.strftime('%d-%b')} to {(start_date + timedelta(days=5)).strftime('%d-%b')})"
+            st.caption(f"**Cycle Window:** {week_label} *(Sun - Fri Operational)*")
+            
         with c_info:
             st.markdown("### 🎯 Daily Route Targets (Amazon Station Volume)")
             st.caption("Adjust expected route counts per day to match fluctuating station volume.")
 
         days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
-        week_dates = [start_date + timedelta(days=i) for i in range(7)]
         
         target_cols = st.columns(7)
         expected_routes_dict = {}
-        default_targets = {"Sun": 26, "Mon": 25, "Tue": 25, "Wed": 28, "Thu": 24, "Fri": 24, "Sat": 24}
+        default_targets = {"Sun": 26, "Mon": 25, "Tue": 25, "Wed": 28, "Thu": 24, "Fri": 24, "Sat": 0}
         
         for i, day in enumerate(days):
             with target_cols[i]:
@@ -127,14 +143,14 @@ def render_scheduler_tab():
         st.markdown("### 📊 Live Coverage vs. Station Targets")
         metrics_cols = st.columns(7)
         
+        work_shifts = ["Driver", "Helper", "OPS-AM", "OPS-PM"]
         for i, day in enumerate(days):
-            driver_count = len(st.session_state['schedule_df'][st.session_state['schedule_df'][day] == "Driver"])
+            driver_count = len(st.session_state['schedule_df'][st.session_state['schedule_df'][day].isin(work_shifts)])
             day_target = expected_routes_dict[day]
             delta = driver_count - day_target
             metrics_cols[i].metric(label=day, value=driver_count, delta=delta)
 
         df_display = st.session_state['schedule_df'].copy()
-        work_shifts = ["Driver", "Helper", "OPS-AM", "OPS-PM"]
         df_display['Total Days'] = df_display[days].isin(work_shifts).sum(axis=1)
 
         st.caption("Assign shift options. Long-range requests are auto-populated as 'Rqst Off' with notes pulled from your calendar.")
