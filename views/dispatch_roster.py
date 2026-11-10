@@ -25,23 +25,16 @@ from modules.roster import (
 
 
 def normalize_name(name_str):
-  """Cleans and standardizes names by converting to lowercase, removing middle initials/names,
-
-  and stripping punctuation/extra whitespace. E.g., 'John A. Smith' -> 'john
-  smith', 'Smith, John' -> 'john smith'
-  """
   if pd.isna(name_str) or not str(name_str).strip():
     return ""
 
   s = str(name_str).strip().lower()
 
-  # Handle "Last, First" format
   if "," in s:
     parts = [p.strip() for p in s.split(",", 1)]
     if len(parts) == 2:
       s = f"{parts[1]} {parts[0]}"
 
-  # Remove special punctuation
   s = re.sub(r"[^a-z\s]", "", s)
   tokens = s.split()
 
@@ -56,10 +49,6 @@ def normalize_name(name_str):
 def is_driver_in_directory(
     cortex_name, known_drivers_list, similarity_threshold=0.85
 ):
-  """Checks if a Cortex driver name matches any existing driver in the directory
-
-  using normalized first/last token comparison and fuzzy similarity.
-  """
   cortex_norm = normalize_name(cortex_name)
   if not cortex_norm:
     return True
@@ -80,7 +69,6 @@ def is_driver_in_directory(
 
 
 def format_van_with_recency_and_size(van_bumper, fleet_df, last_driven_map):
-  """Formats a van bumper with its size bracket, type, and days since last driven."""
   bmp = str(van_bumper).strip()
   st_val = "M"
   v_type = ""
@@ -91,7 +79,6 @@ def format_van_with_recency_and_size(van_bumper, fleet_df, last_driven_map):
       st_val = str(match.iloc[0].get("ST", "M")).strip()
       v_type = str(match.iloc[0].get("type_clean", "")).strip()
 
-  # Calculate days since last driven
   recency_str = "Never driven / No history"
   if bmp in last_driven_map:
     last_date = last_driven_map[bmp]
@@ -114,6 +101,9 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
   phones = st.session_state.get("phones_df")
   drivers_df = st.session_state.get("drivers_df")
   active_user = st.session_state.get("user_name", "Dispatcher")
+
+  # Load van recency map ONCE at the start of the tab render
+  last_driven_map = get_van_last_driven_dict()
 
   if fleet is not None:
     active_mask = (
@@ -239,9 +229,7 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
         c1.metric("Today's Cortex Routes", len(routes_df))
         c2.metric("Active Vans (Status: UP)", active_count)
 
-        # ---------------------------------------------------------
-        # PRIORITY VAN PRE-ASSIGNMENT SELECTION (WITH STALE RECENTY TRACKING)
-        # ---------------------------------------------------------
+        # PRIORITY VAN PRE-ASSIGNMENT SELECTION
         with st.expander(
             "⭐ Priority Van Pre-Assignments (Force Vans on Road / Rotate Stale"
             " Fleet)",
@@ -254,19 +242,17 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
               " a week."
           )
 
-          last_driven_map = get_van_last_driven_dict()
           active_van_bumpers = (
               active_fleet_df["vehicleName"].astype(str).str.strip().tolist()
               if "vehicleName" in active_fleet_df.columns
               else []
           )
 
-          # Quick auto-select button for vans not driven in 7+ days
           stale_vans_list = []
           today_date = datetime.date.today()
           for v in active_van_bumpers:
             if v not in last_driven_map:
-              stale_vans_list.append(v)  # Never driven in recorded history
+              stale_vans_list.append(v)
             else:
               d_ago = (today_date - last_driven_map[v]).days
               if d_ago >= 7:
@@ -355,7 +341,6 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
             drv = str(row.get("Driver", "")).strip()
             rt = str(row.get("Route", "")).strip()
             bmp = str(row.get("Van Bumper", "")).strip()
-            last_driven_map = get_van_last_driven_dict()
             van_lbl = format_van_with_recency_and_size(
                 bmp, active_fleet_df, last_driven_map
             )
@@ -440,7 +425,6 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
                   key="sw_v1",
               )
 
-              last_driven_map = get_van_last_driven_dict()
               van_label_map = {
                   v: format_van_with_recency_and_size(
                       v, active_fleet_df, last_driven_map
@@ -502,7 +486,6 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
             )
 
             if unassigned_vans:
-              last_driven_map = get_van_last_driven_dict()
               van_label_map = {
                   v: format_van_with_recency_and_size(
                       v, active_fleet_df, last_driven_map
@@ -694,7 +677,6 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
           )
 
           if unassigned_vans:
-            last_driven_map = get_van_last_driven_dict()
             van_label_map = {
                 v: format_van_with_recency_and_size(
                     v, active_fleet_df, last_driven_map
