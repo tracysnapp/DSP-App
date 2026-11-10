@@ -299,9 +299,10 @@ def load_snapshot_file(filename):
 
 @st.cache_data(ttl=300, show_spinner=False)
 def get_van_last_driven_dict():
-  """Scans historical roster snapshots to calculate the last date each van was driven (Cached)."""
+  """Scans historical roster snapshots from the last 14 days to calculate the last date each van was driven (Cached)."""
   snapshot_files = list_snapshot_files()
   van_last_date = {}
+  cutoff_date = datetime.date.today() - datetime.timedelta(days=14)
 
   for fname in snapshot_files:
     match = re.search(r"roster_(\d{4}-\d{2}-\d{2})", fname)
@@ -309,13 +310,15 @@ def get_van_last_driven_dict():
       date_str = match.group(1)
       try:
         snapshot_date = pd.to_datetime(date_str).date()
-        df = load_snapshot_file(fname)
-        if not df.empty and "Van Bumper" in df.columns:
-          bumpers = df["Van Bumper"].dropna().astype(str).str.strip().unique()
-          for b in bumpers:
-            if b and b.upper() not in ["NAN", "NONE", "", "UNASSIGNED", "N/A"]:
-              if b not in van_last_date or snapshot_date > van_last_date[b]:
-                van_last_date[b] = snapshot_date
+        # Only process snapshot files within the last 14 days
+        if snapshot_date >= cutoff_date:
+          df = load_snapshot_file(fname)
+          if not df.empty and "Van Bumper" in df.columns:
+            bumpers = df["Van Bumper"].dropna().astype(str).str.strip().unique()
+            for b in bumpers:
+              if b and b.upper() not in ["NAN", "NONE", "", "UNASSIGNED", "N/A"]:
+                if b not in van_last_date or snapshot_date > van_last_date[b]:
+                  van_last_date[b] = snapshot_date
       except Exception:
         continue
   return van_last_date
