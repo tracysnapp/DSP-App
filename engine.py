@@ -297,8 +297,9 @@ def load_snapshot_file(filename):
   return df
 
 
+@st.cache_data(ttl=300, show_spinner=False)
 def get_van_last_driven_dict():
-  """Scans historical roster snapshots to calculate the last date each van was driven."""
+  """Scans historical roster snapshots to calculate the last date each van was driven (Cached)."""
   snapshot_files = list_snapshot_files()
   van_last_date = {}
 
