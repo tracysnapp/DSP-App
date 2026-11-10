@@ -170,14 +170,24 @@ if (
   st.session_state["incidents_log_df"] = load_local_incidents_log()
 
 # --- AUTO-LOAD LATEST HISTORICAL SNAPSHOT ON LAUNCH / REFRESH ---
-if "current_roster" not in st.session_state or st.session_state.get("current_roster") is None or st.session_state["current_roster"].empty:
-  snapshot_files = list_snapshot_files()
-  if snapshot_files:
-    # list_snapshot_files() returns sorted reverse order, so index 0 is the newest
-    latest_snapshot = snapshot_files[0]
-    loaded_latest_df = load_snapshot_file(latest_snapshot)
-    if not loaded_latest_df.empty:
-      st.session_state["current_roster"] = loaded_latest_df
+if "current_roster" not in st.session_state:
+  st.session_state["current_roster"] = None
+
+if st.session_state["current_roster"] is None or (
+    isinstance(st.session_state["current_roster"], pd.DataFrame)
+    and st.session_state["current_roster"].empty
+):
+  # Only auto-load if a manual reset wasn't just triggered
+  if not st.session_state.get("roster_manually_reset", False):
+    snapshot_files = list_snapshot_files()
+    if snapshot_files:
+      latest_snapshot = snapshot_files[0]
+      loaded_latest_df = load_snapshot_file(latest_snapshot)
+      if not loaded_latest_df.empty:
+        st.session_state["current_roster"] = loaded_latest_df
+  else:
+    # Clear the reset flag once respected so future app reloads can resume auto-loading if desired
+    st.session_state["roster_manually_reset"] = False
 
 
 def update_live_roster(
@@ -185,6 +195,8 @@ def update_live_roster(
 ):
   """Updates active roster in session state, syncs closing checklist, and saves snapshot to GCS."""
   st.session_state["current_roster"] = new_roster_df.copy()
+  # Clear reset flag since we now have a valid active roster
+  st.session_state["roster_manually_reset"] = False
 
   from modules.roster import update_closing_checklist_assignments
 
