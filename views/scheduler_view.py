@@ -89,8 +89,6 @@ def render_scheduler_tab():
         day_headers = [f"{d_date.strftime('%a, %d %b')}" for d_date in week_dates]
         day_key_to_header = dict(zip(day_keys, day_headers))
 
-        days = day_headers
-
         target_cols = st.columns(7)
         expected_routes_dict = {}
         default_targets = {
@@ -155,17 +153,44 @@ def render_scheduler_tab():
                     if d_key in sch_df.columns and d_header not in sch_df.columns:
                         sch_df.rename(columns={d_key: d_header}, inplace=True)
 
+            # --- ENSURE NAME COLUMNS EXIST BEFORE PTO MATCHING ---
+            if not sch_df.empty:
+                if 'First Name' not in sch_df.columns or 'Last Name' not in sch_df.columns:
+                    if 'Driver Name' in sch_df.columns:
+                        fn_list, ln_list = [], []
+                        for val in sch_df['Driver Name']:
+                            name_str = str(val).strip()
+                            if ',' in name_str:
+                                p = name_str.split(',', 1)
+                                ln_list.append(p[0].strip())
+                                fn_list.append(p[1].strip())
+                            else:
+                                p = name_str.split(' ', 1)
+                                fn_list.append(p[0].strip())
+                                ln_list.append(p[1].strip() if len(p) > 1 else '')
+                        sch_df['First Name'] = fn_list
+                        sch_df['Last Name'] = ln_list
+
             # --- SYNCHRONIZE LONG-RANGE PTO CALENDAR INTO SCHEDULE VIEW ---
             if not pto_data.empty and not sch_df.empty:
                 for idx, d_row in sch_df.iterrows():
-                    d_full = f"{d_row['First Name']} {d_row['Last Name']}".strip().lower()
-                    d_reverse = f"{d_row['Last Name']}, {d_row['First Name']}".strip().lower()
+                    fn = str(d_row.get('First Name', '')).strip()
+                    ln = str(d_row.get('Last Name', '')).strip()
+                    dn = str(d_row.get('Driver Name', '')).strip()
+
+                    d_full = f"{fn} {ln}".strip().lower() if (fn or ln) else dn.lower()
+                    d_reverse = f"{ln}, {fn}".strip().lower() if (fn or ln) else dn.lower()
 
                     notes_list = []
                     for _, pto_row in pto_data.iterrows():
                         pto_name = str(pto_row.get('Driver Name', '')).strip().lower()
 
-                        if pto_name and (pto_name == d_full or pto_name == d_reverse or pto_name in d_full):
+                        if pto_name and (
+                            pto_name == d_full 
+                            or pto_name == d_reverse 
+                            or (dn and pto_name == dn.lower())
+                            or (d_full and pto_name in d_full)
+                        ):
                             try:
                                 p_start = pd.to_datetime(pto_row['Start Date']).date()
                                 p_end = pd.to_datetime(pto_row['End Date']).date()
@@ -179,7 +204,12 @@ def render_scheduler_tab():
                                     if p_start <= d_date <= p_end:
                                         if "No Sundays" in cat and day_name_str == "Sun":
                                             sch_df.at[idx, header_name] = "Rqst Off"
-                                        elif cat in ["Approved PTO", "Unpaid Leave", "Appointment / Partial Off", "Other Constraint"]:
+                                        elif cat in [
+                                            "Approved PTO",
+                                            "Unpaid Leave",
+                                            "Appointment / Partial Off",
+                                            "Other Constraint",
+                                        ]:
                                             sch_df.at[idx, header_name] = "Rqst Off"
 
                                 notes_list.append(
@@ -189,15 +219,22 @@ def render_scheduler_tab():
                                 pass
 
                     if notes_list:
-                        existing_notes = str(sch_df.at[idx, "Notes / Requests"])
+                        existing_notes = str(d_row.get("Notes / Requests", ""))
+                        if existing_notes == "nan":
+                            existing_notes = ""
                         combined = " | ".join(notes_list)
                         sch_df.at[idx, "Notes / Requests"] = (
                             f"{existing_notes} | {combined}".strip(" |") if existing_notes else combined
                         )
 
-            st.session_state['schedule_df'] = sch_df.sort_values(
-                by=['Last Name', 'First Name'], ascending=[True, True]
-            ).reset_index(drop=True)
+            sort_cols = [c for c in ['Last Name', 'First Name', 'Driver Name'] if c in sch_df.columns]
+            if sort_cols:
+                st.session_state['schedule_df'] = sch_df.sort_values(
+                    by=sort_cols, ascending=True
+                ).reset_index(drop=True)
+            else:
+                st.session_state['schedule_df'] = sch_df.copy()
+
             st.session_state['loaded_week_num'] = sel_amazon_week
 
         def on_schedule_change():
@@ -236,6 +273,7 @@ def render_scheduler_tab():
         shift_options = ["Driver", "Helper", "On-Call", "Off", "OPS-AM", "OPS-PM", "Rqst Off"]
 
         sch_config = {
+            "Driver Name": st.column_config.TextColumn("Driver Name", disabled=True),
             "Last Name": st.column_config.TextColumn("Last Name", disabled=True),
             "First Name": st.column_config.TextColumn("First Name", disabled=True),
             "Total Days": st.column_config.NumberColumn(
@@ -327,15 +365,15 @@ def render_scheduler_tab():
                 'schedule_df' in st.session_state
                 and not st.session_state['schedule_df'].empty
             ):
-                driver_names = sorted(
-                    (
-                        st.session_state['schedule_df']['First Name']
-                        + " "
-                        + st.session_state['schedule_df']['Last Name']
+                sch_ref = st.session_state['schedule_df']
+                if 'First Name' in sch_ref.columns and 'Last Name' in sch_ref.columns:
+                    driver_names = sorted(
+                        (sch_ref['First Name'] + " " + sch_ref['Last Name'])
+                        .unique()
+                        .tolist()
                     )
-                    .unique()
-                    .tolist()
-                )
+                elif 'Driver Name' in sch_ref.columns:
+                    driver_names = sorted(sch_ref['Driver Name'].unique().tolist())
             else:
                 driver_names = ["Manual Entry Required"]
 
