@@ -258,6 +258,15 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
               if d_ago >= 7:
                 stale_vans_list.append(v)
 
+          # --- STALE VAN BANNER MESSAGE ---
+          if stale_vans_list:
+            st.warning(
+                f"⚠️ **Stale Fleet Alert:** Found **{len(stale_vans_list)}** active"
+                f" operational van(s) that haven't been driven in 7+ days or have no"
+                f" recorded history: **{', '.join(stale_vans_list)}**. Use the"
+                " button below to quickly queue them for rotation!"
+            )
+
           if st.button(
               f"⚡ Auto-Select Stale Vans (Sitting > 7 Days: {len(stale_vans_list)}"
               " Found)",
