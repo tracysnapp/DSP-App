@@ -169,6 +169,16 @@ if (
 ):
   st.session_state["incidents_log_df"] = load_local_incidents_log()
 
+# --- AUTO-LOAD LATEST HISTORICAL SNAPSHOT ON LAUNCH / REFRESH ---
+if "current_roster" not in st.session_state or st.session_state.get("current_roster") is None or st.session_state["current_roster"].empty:
+  snapshot_files = list_snapshot_files()
+  if snapshot_files:
+    # list_snapshot_files() returns sorted reverse order, so index 0 is the newest
+    latest_snapshot = snapshot_files[0]
+    loaded_latest_df = load_snapshot_file(latest_snapshot)
+    if not loaded_latest_df.empty:
+      st.session_state["current_roster"] = loaded_latest_df
+
 
 def update_live_roster(
     new_roster_df, toast_msg="Roster updated successfully!"
