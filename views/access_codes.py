@@ -71,33 +71,46 @@ def render_access_codes_tab(is_admin):
         st.markdown("---")
 
         # ---------------------------------------------------------
-        # 3. SEARCH & DIRECTORY DATA EDITOR
+        # 3. SEARCH, SORT & DIRECTORY DATA EDITOR
         # ---------------------------------------------------------
-        search_term = st.text_input("🔍 Search Location, Address, or Code", placeholder="Type location name, street address, or gate code...")
+        col_s1, col_s2, col_s3 = st.columns([2, 1, 1])
+        search_term = col_s1.text_input("🔍 Search Location, Address, or Code", placeholder="Type location name, street address, or gate code...")
+        sort_column = col_s2.selectbox("Sort By", options=["Location", "Code"], index=0)
+        sort_order = col_s3.selectbox("Order", options=["Ascending", "Descending"], index=0)
         
+        # Apply Search Filtering
         if search_term.strip():
             st_clean = search_term.strip().lower()
             filtered_df = access_data[
                 access_data['Location'].astype(str).str.lower().str.contains(st_clean) |
                 access_data['Code'].astype(str).str.lower().str.contains(st_clean) |
                 access_data['Special Instructions'].astype(str).str.lower().str.contains(st_clean)
-            ]
+            ].copy()
         else:
-            filtered_df = access_data
+            filtered_df = access_data.copy()
+
+        # Apply Sorting
+        if not filtered_df.empty and sort_column in filtered_df.columns:
+            is_ascending = (sort_order == "Ascending")
+            filtered_df = filtered_df.sort_values(by=sort_column, ascending=is_ascending)
 
         st.caption(f"Showing {len(filtered_df)} location records.")
 
         def on_access_change():
             changes = st.session_state.get("access_codes_editor_state")
             if changes and "access_df" in st.session_state:
+                # Handle cell edits safely using original index preservation
                 for row_idx, col_changes in changes.get("edited_rows", {}).items():
+                    orig_idx = filtered_df.index[int(row_idx)]
                     for col_name, new_val in col_changes.items():
-                        st.session_state['access_df'].at[row_idx, col_name] = new_val
+                        st.session_state['access_df'].at[orig_idx, col_name] = new_val
                 
+                # Handle row deletions
                 deleted_rows = changes.get("deleted_rows", [])
                 if deleted_rows:
                     if is_admin:
-                        st.session_state['access_df'] = st.session_state['access_df'].drop(deleted_rows).reset_index(drop=True)
+                        orig_indices_to_drop = [filtered_df.index[int(r)] for r in deleted_rows]
+                        st.session_state['access_df'] = st.session_state['access_df'].drop(orig_indices_to_drop).reset_index(drop=True)
                         safe_save_dataframe(st.session_state['access_df'], ACCESS_CODES_PATH)
                         log_dispatch_action(f"Deleted {len(deleted_rows)} entry/entries from Gate Access Directory via table row deletion.", username=active_user)
                         st.toast("Access code entry deleted successfully!", icon="🗑️")
