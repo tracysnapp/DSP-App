@@ -14,12 +14,55 @@ from modules.schedule import generate_discord_schedule, send_discord_webhook
 LONG_RANGE_PTO_PATH = "data/long_range_pto.csv"
 
 
-def get_amazon_week_dates(year, week_num):
-  """Calculates the 7 days (Sunday through Saturday) for a given Amazon week number (1-52)."""
+def get_amazon_week_1_start(year: int) -> datetime:
+  """Returns the Sunday start date of Amazon Week 1 for a given operating year.
+  
+  Amazon Operating Years start on the Sunday of the week containing Jan 1st/4th.
+  - 2026 Week 1: Sun, Dec 28, 2025 (making Nov 8 - Nov 14, 2026 = Week 46, and Dec 27 - Jan 2 = Week 53)
+  - 2027 Week 1: Sun, Jan 03, 2027
+  """
+  # 2027 specific override per Amazon station schedule alignment
+  if year == 2027:
+    return datetime(2027, 1, 3)
+  elif year == 2026:
+    return datetime(2025, 12, 28)
+  
+  # Standard calculation fallback for other years (Sunday on or before Jan 4)
   jan_4 = datetime(year, 1, 4)
-  week_1_sun = jan_4 - timedelta(days=(jan_4.weekday() + 1) % 7)
+  return jan_4 - timedelta(days=(jan_4.weekday() + 1) % 7)
+
+
+def get_amazon_week_dates(year: int, week_num: int):
+  """Calculates the 7 days (Sunday through Saturday) for a given Amazon week number."""
+  week_1_sun = get_amazon_week_1_start(year)
   target_sun = week_1_sun + timedelta(weeks=week_num - 1)
   return [target_sun + timedelta(days=i) for i in range(7)]
+
+
+def get_current_amazon_week_info():
+  """Returns (current_year, current_amazon_week_num) for today's date."""
+  today = datetime.today()
+  current_year = today.year
+
+  # Check current year's week 1 start
+  w1_start = get_amazon_week_1_start(current_year)
+
+  if today < w1_start:
+    # Belongs to previous operating year
+    op_year = current_year - 1
+    w1_start = get_amazon_week_1_start(op_year)
+  else:
+    # Check if we've crossed into next year's Week 1
+    next_w1_start = get_amazon_week_1_start(current_year + 1)
+    if today >= next_w1_start:
+      op_year = current_year + 1
+      w1_start = next_w1_start
+    else:
+      op_year = current_year
+
+  days_diff = (today - w1_start).days
+  week_num = (days_diff // 7) + 1
+  return op_year, week_num
 
 
 def load_long_range_pto():
@@ -56,24 +99,25 @@ def render_scheduler_tab():
     st.session_state["pto_df"] = load_long_range_pto()
 
   # ==========================================
-  # TAB 1: WEEKLY SHIFT SCHEDULER (AMAZON WEEKS 1-52)
+  # TAB 1: WEEKLY SHIFT SCHEDULER (AMAZON WEEKS 1-53)
   # ==========================================
   with tab_weekly:
     c_date, c_info = st.columns([1, 2])
     with c_date:
-      current_year = datetime.today().year
-      current_week_num = datetime.today().isocalendar()[1]
+      curr_op_year, curr_amazon_week = get_current_amazon_week_info()
 
       sel_year = st.selectbox(
           "Operating Year",
-          options=[current_year - 1, current_year, current_year + 1],
+          options=[curr_op_year - 1, curr_op_year, curr_op_year + 1],
           index=1,
       )
+      
+      # Support up to 53 weeks for Amazon operational calendar years
       sel_amazon_week = st.number_input(
           "Amazon Operating Week #",
           min_value=1,
-          max_value=52,
-          value=current_week_num,
+          max_value=53,
+          value=curr_amazon_week,
           step=1,
       )
 
@@ -581,3 +625,4 @@ def render_scheduler_tab():
         st.success(
             "Long-range calendar saved and weekly schedule synchronized!"
         )
+```[cite: 6]
