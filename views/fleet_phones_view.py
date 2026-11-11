@@ -28,26 +28,15 @@ def render_fleet_tab():
     with tab_fleet_view:
         st.markdown("### Fleet Vehicle Master List")
         if fleet_df is not None and not fleet_df.empty:
-            st.caption("Click any van's **Status** cell to toggle between **UP** and **DOWN**. Save changes when finished.")
+            st.caption("Click any van's **Status** cell to select **UP** or **DOWN** from the dropdown. Click **Save** when finished.")
             
-            # Interactive UP/DOWN dropdown options for all users
-            status_options = ["UP", "DOWN"]
-            
-            # Map column configuration dynamically matching clean or raw column names
-            status_col = 'status_clean' if 'status_clean' in fleet_df.columns else ('Status' if 'Status' in fleet_df.columns else fleet_df.columns[0])
-            name_col = 'vehicleName' if 'vehicleName' in fleet_df.columns else fleet_df.columns[0]
-            vin_col = 'vin_clean' if 'vin_clean' in fleet_df.columns else ('VIN' if 'VIN' in fleet_df.columns else fleet_df.columns[0])
-            st_col = 'serviceType_clean' if 'serviceType_clean' in fleet_df.columns else ('Service Type' if 'Service Type' in fleet_df.columns else fleet_df.columns[0])
-            driven_col = 'last_driven_clean' if 'last_driven_clean' in fleet_df.columns else ('Last Driven' if 'Last Driven' in fleet_df.columns else fleet_df.columns[0])
-            remarks_col = 'remarks_clean' if 'remarks_clean' in fleet_df.columns else ('Remarks' if 'Remarks' in fleet_df.columns else fleet_df.columns[-1])
-
             fleet_config = {
-                name_col: st.column_config.TextColumn("Van Bumper", disabled=True),
-                vin_col: st.column_config.TextColumn("VIN", disabled=True),
-                st_col: st.column_config.TextColumn("Size Bracket", disabled=True),
-                status_col: st.column_config.SelectboxColumn("Status (UP/DOWN)", options=status_options, required=True),
-                driven_col: st.column_config.TextColumn("Last Driven", disabled=True),
-                remarks_col: st.column_config.TextColumn("Remarks / Maintenance Notes")
+                "Van Bumper": st.column_config.TextColumn("Van Bumper", disabled=True),
+                "VIN": st.column_config.TextColumn("VIN", disabled=True),
+                "Size Bracket": st.column_config.TextColumn("Size Bracket", disabled=True),
+                "Status": st.column_config.SelectboxColumn("Status", options=["UP", "DOWN"], required=True),
+                "Last Driven": st.column_config.TextColumn("Last Driven", disabled=True),
+                "Remarks": st.column_config.TextColumn("Remarks / Maintenance Notes")
             }
 
             edited_fleet = st.data_editor(
