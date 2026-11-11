@@ -297,31 +297,51 @@ def load_snapshot_file(filename):
   return df
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=60, show_spinner=False)
 def get_van_last_driven_dict():
-  """Scans historical roster snapshots from the last 14 days to calculate the last date each van was driven (Cached)."""
-  snapshot_files = list_snapshot_files()
+  """Returns a dictionary mapping van bumpers to their last driven date from master fleet data instantly."""
+  fleet_df = load_dataframe_auto(MASTER_FLEET_PATH)
   van_last_date = {}
-  cutoff_date = datetime.date.today() - datetime.timedelta(days=14)
 
-  for fname in snapshot_files:
-    match = re.search(r"roster_(\d{4}-\d{2}-\d{2})", fname)
-    if match:
-      date_str = match.group(1)
-      try:
-        snapshot_date = pd.to_datetime(date_str).date()
-        # Only process snapshot files within the last 14 days
-        if snapshot_date >= cutoff_date:
-          df = load_snapshot_file(fname)
-          if not df.empty and "Van Bumper" in df.columns:
-            bumpers = df["Van Bumper"].dropna().astype(str).str.strip().unique()
-            for b in bumpers:
-              if b and b.upper() not in ["NAN", "NONE", "", "UNASSIGNED", "N/A"]:
-                if b not in van_last_date or snapshot_date > van_last_date[b]:
-                  van_last_date[b] = snapshot_date
-      except Exception:
-        continue
+  if fleet_df is not None and not fleet_df.empty:
+    bumper_col = next((c for c in fleet_df.columns if 'bumper' in c.lower() or 'vehicle' in c.lower() or 'name' in c.lower()), None)
+    date_col = next((c for c in fleet_df.columns if 'driven' in c.lower() or 'date' in c.lower()), None)
+    
+    if bumper_col and date_col:
+      for _, row in fleet_df.iterrows():
+        b = str(row[bumper_col]).strip()
+        d = str(row[date_col]).strip()
+        if b and d and d.upper() not in ["NAN", "NONE", ""]:
+          try:
+            van_last_date[b] = pd.to_datetime(d).date()
+          except Exception:
+            continue
+            
   return van_last_date
+
+
+def update_van_last_driven(van_bumper, activity_date=None):
+  """Updates the 'Last Driven' date for a specific van bumper in master_fleet.xlsx instantly."""
+  if not van_bumper or str(van_bumper).strip().upper() in ["NAN", "NONE", "", "UNASSIGNED", "N/A"]:
+    return
+  
+  if activity_date is None:
+    activity_date = datetime.date.today().strftime("%Y-%m-%d")
+    
+  fleet_df = load_dataframe_auto(MASTER_FLEET_PATH)
+  if fleet_df is not None and not fleet_df.empty:
+    bumper_col = next((c for c in fleet_df.columns if 'bumper' in c.lower() or 'vehicle' in c.lower() or 'name' in c.lower()), fleet_df.columns[0])
+    date_col = next((c for c in fleet_df.columns if 'driven' in c.lower() or 'date' in c.lower()), None)
+    
+    if not date_col:
+      date_col = "Last Driven"
+      fleet_df[date_col] = ""
+      
+    mask = fleet_df[bumper_col].astype(str).str.strip().str.upper() == str(van_bumper).strip().upper()
+    if mask.any():
+      fleet_df.loc[mask, date_col] = activity_date
+      safe_save_dataframe(fleet_df, MASTER_FLEET_PATH)
+      load_local_fleet.clear()
 
 
 def process_access_data(access_df):
