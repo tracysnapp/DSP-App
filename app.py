@@ -31,6 +31,7 @@ from views.driver_directory import render_driver_directory_tab
 from views.fleet_phones_view import render_fleet_tab
 from views.scheduler_view import render_scheduler_tab
 from views.scorecards_view import render_scorecards_tab
+from views.access_codes import render_access_codes_tab
 
 # Page Configuration
 st.set_page_config(
@@ -154,10 +155,10 @@ if (
 ):
   st.session_state["scorecards_df"] = load_local_scorecards()
 if (
-    "access_codes_df" not in st.session_state
-    or st.session_state["access_codes_df"] is None
+    "access_df" not in st.session_state
+    or st.session_state["access_df"] is None
 ):
-  st.session_state["access_codes_df"] = load_local_access_codes()
+  st.session_state["access_df"] = load_local_access_codes()
 if (
     "attendance_log_df" not in st.session_state
     or st.session_state["attendance_log_df"] is None
@@ -289,39 +290,8 @@ with tab_closing:
   render_closing_checklist_tab()
 
 with tab_access:
-  st.subheader("🔑 Station & Delivery Access Codes")
-  access_df = st.session_state.get("access_codes_df")
-  if access_df is not None:
-    user_role = st.session_state.get("user_role", "Dispatcher")
-    active_user = st.session_state.get("user_name", "Dispatcher")
-    is_admin = user_role == "Admin"
-
-    if is_admin:
-      st.caption(
-          "Manage station gate codes, door access, and locker codes (Admin Edit"
-          " Mode)."
-      )
-      edited_access = st.data_editor(
-          access_df,
-          use_container_width=True,
-          hide_index=True,
-          num_rows="dynamic",
-          key="access_codes_editor_key",
-      )
-      if st.button("💾 Save Access Codes", type="primary"):
-        st.session_state["access_codes_df"] = edited_access.copy()
-        safe_save_dataframe(edited_access, ACCESS_CODES_PATH)
-        load_local_access_codes.clear()
-        log_dispatch_action(
-            "Updated Station Access & Gate Codes.", username=active_user
-        )
-        st.toast("Access codes saved!", icon="🔑")
-        st.rerun()
-    else:
-      st.caption("Read-Only View for Dispatch Desk.")
-      st.dataframe(access_df, use_container_width=True, hide_index=True)
-  else:
-    st.info("No access code records found in master storage.")
+  user_role = st.session_state.get("user_role", "Dispatcher")
+  render_access_codes_tab(is_admin=(user_role == "Admin"))
 
 with tab_scheduler:
   render_scheduler_tab()
