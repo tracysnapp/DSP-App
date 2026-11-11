@@ -21,13 +21,11 @@ def get_amazon_week_1_start(year: int) -> datetime:
   - 2026 Week 1: Sun, Dec 28, 2025 (making Nov 8 - Nov 14, 2026 = Week 46, and Dec 27 - Jan 2 = Week 53)
   - 2027 Week 1: Sun, Jan 03, 2027
   """
-  # 2027 specific override per Amazon station schedule alignment
   if year == 2027:
     return datetime(2027, 1, 3)
   elif year == 2026:
     return datetime(2025, 12, 28)
   
-  # Standard calculation fallback for other years (Sunday on or before Jan 4)
   jan_4 = datetime(year, 1, 4)
   return jan_4 - timedelta(days=(jan_4.weekday() + 1) % 7)
 
@@ -44,15 +42,12 @@ def get_current_amazon_week_info():
   today = datetime.today()
   current_year = today.year
 
-  # Check current year's week 1 start
   w1_start = get_amazon_week_1_start(current_year)
 
   if today < w1_start:
-    # Belongs to previous operating year
     op_year = current_year - 1
     w1_start = get_amazon_week_1_start(op_year)
   else:
-    # Check if we've crossed into next year's Week 1
     next_w1_start = get_amazon_week_1_start(current_year + 1)
     if today >= next_w1_start:
       op_year = current_year + 1
@@ -112,7 +107,6 @@ def render_scheduler_tab():
           index=1,
       )
       
-      # Support up to 53 weeks for Amazon operational calendar years
       sel_amazon_week = st.number_input(
           "Amazon Operating Week #",
           min_value=1,
@@ -121,12 +115,11 @@ def render_scheduler_tab():
           step=1,
       )
 
-      # Full Sunday through Saturday date objects
       week_datetime_objs = get_amazon_week_dates(sel_year, int(sel_amazon_week))
       week_dates = [dt.date() for dt in week_datetime_objs]
 
-      start_date = week_dates[0]  # Sunday
-      end_date = week_dates[6]  # Saturday
+      start_date = week_dates[0]
+      end_date = week_dates[6]
 
       week_label = (
           f"Amazon Week {sel_amazon_week} ({start_date.strftime('%d-%b')} to"
@@ -141,7 +134,6 @@ def render_scheduler_tab():
           " volume."
       )
 
-    # Strictly ordered Sunday through Saturday
     day_keys = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
     day_headers = [f"{d_date.strftime('%a %d %b')}" for d_date in week_dates]
     day_key_to_header = dict(zip(day_keys, day_headers))
@@ -168,7 +160,6 @@ def render_scheduler_tab():
             key=f"target_route_{d_key}",
         )
 
-    # Force schedule rebuild/sync if operating week changed or schedule not present
     if (
         "schedule_df" not in st.session_state
         or st.session_state["schedule_df"] is None
@@ -210,12 +201,10 @@ def render_scheduler_tab():
         sch_df = pd.DataFrame(init_sch)
       else:
         sch_df = loaded_sch.copy()
-        # Rename standard day columns to date-formatted headers if needed
         for d_key, d_header in day_key_to_header.items():
           if d_key in sch_df.columns and d_header not in sch_df.columns:
             sch_df.rename(columns={d_key: d_header}, inplace=True)
 
-      # --- ENSURE NAME COLUMNS ARE NORMALIZED ---
       if not sch_df.empty:
         if (
             "First Name" not in sch_df.columns
@@ -236,7 +225,6 @@ def render_scheduler_tab():
             sch_df["First Name"] = fn_list
             sch_df["Last Name"] = ln_list
 
-        # Keep a clean Driver Name column (First Last)
         if "Driver Name" not in sch_df.columns:
           sch_df["Driver Name"] = (
               sch_df["First Name"].astype(str)
@@ -244,7 +232,6 @@ def render_scheduler_tab():
               + sch_df["Last Name"].astype(str)
           ).str.strip()
 
-      # --- SYNCHRONIZE LONG-RANGE PTO CALENDAR INTO SCHEDULE VIEW ---
       if not pto_data.empty and not sch_df.empty:
         for idx, d_row in sch_df.iterrows():
           fn = str(d_row.get("First Name", "")).strip()
@@ -305,13 +292,10 @@ def render_scheduler_tab():
                 else combined
             )
 
-      # --- STRICT COLUMN ORDERING ---
-      # Order: Driver Name, Sun ... Sat, Notes / Requests
       ordered_cols = ["Driver Name"] + day_headers
       if "Notes / Requests" in sch_df.columns:
         ordered_cols.append("Notes / Requests")
 
-      # Preserve First/Last behind the scenes for sorting
       for c in ["First Name", "Last Name"]:
         if c in sch_df.columns and c not in ordered_cols:
           ordered_cols.append(c)
@@ -364,7 +348,6 @@ def render_scheduler_tab():
         work_shifts
     ).sum(axis=1)
 
-    # --- BUILD FINAL DISPLAY COLUMNS ---
     display_cols = ["Driver Name"] + existing_day_cols
     if "Total Days" in df_display.columns:
       display_cols.append("Total Days")
@@ -625,4 +608,3 @@ def render_scheduler_tab():
         st.success(
             "Long-range calendar saved and weekly schedule synchronized!"
         )
-```[cite: 6]
