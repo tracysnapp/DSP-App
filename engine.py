@@ -547,4 +547,3 @@ def save_driver_incident(
   safe_save_dataframe(updated_df, INCIDENTS_LOG_PATH)
   load_local_incidents_log.clear()
   return updated_df
-```[cite: 1]
