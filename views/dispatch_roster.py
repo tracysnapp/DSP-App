@@ -73,11 +73,17 @@ def format_van_with_recency_and_size(van_bumper, fleet_df, last_driven_map):
   st_val = "M"
   v_type = ""
 
-  if fleet_df is not None and not fleet_df.empty and "vehicleName" in fleet_df.columns:
-    match = fleet_df[fleet_df["vehicleName"].astype(str).str.strip() == bmp]
+  if fleet_df is not None and not fleet_df.empty:
+    name_col = next((c for c in fleet_df.columns if str(c).strip().lower() in ['van bumper', 'vehiclename', 'bumper']), fleet_df.columns[0])
+    st_c = next((c for c in fleet_df.columns if str(c).strip().lower() in ['size bracket', 'st', 'servicetype']), None)
+    type_c = next((c for c in fleet_df.columns if str(c).strip().lower() in ['type_clean', 'vehicle type']), None)
+
+    match = fleet_df[fleet_df[name_col].astype(str).str.strip() == bmp]
     if not match.empty:
-      st_val = str(match.iloc[0].get("ST", "M")).strip()
-      v_type = str(match.iloc[0].get("type_clean", "")).strip()
+      if st_c:
+        st_val = str(match.iloc[0].get(st_c, "M")).strip()
+      if type_c:
+        v_type = str(match.iloc[0].get(type_c, "")).strip()
 
   recency_str = "Never driven / No history"
   if bmp in last_driven_map:
@@ -106,18 +112,15 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
   last_driven_map = get_van_last_driven_dict()
 
   if fleet is not None:
-    active_mask = (
-        fleet["status_clean"].isin(
-            ["UP", "ACTIVE", "OPERATIONAL", "WORKABLE", "AVAILABLE"]
-        )
-        if "status_clean" in fleet.columns
-        else [True] * len(fleet)
-    )
-    active_fleet_df = (
-        fleet[active_mask].copy()
-        if "status_clean" in fleet.columns
-        else fleet.copy()
-    )
+    # Check for 'Status' or 'status_clean' column robustly
+    status_col_fleet = next((c for c in fleet.columns if str(c).strip().lower() in ['status', 'status_clean']), None)
+    
+    if status_col_fleet:
+      active_mask = fleet[status_col_fleet].astype(str).str.strip().str.upper().isin(["UP", "ACTIVE", "OPERATIONAL", "WORKABLE", "AVAILABLE"])
+      active_fleet_df = fleet[active_mask].copy()
+    else:
+      active_fleet_df = fleet.copy()
+      
     active_count = len(active_fleet_df)
 
     if (
@@ -242,9 +245,10 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
               " a week."
           )
 
+          van_name_col = next((c for c in active_fleet_df.columns if str(c).strip().lower() in ['van bumper', 'vehiclename', 'bumper']), active_fleet_df.columns[0])
           active_van_bumpers = (
-              active_fleet_df["vehicleName"].astype(str).str.strip().tolist()
-              if "vehicleName" in active_fleet_df.columns
+              active_fleet_df[van_name_col].astype(str).str.strip().tolist()
+              if not active_fleet_df.empty
               else []
           )
 
@@ -293,7 +297,7 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
             if "priority_rank" not in prio_fleet_df.columns:
               prio_fleet_df["priority_rank"] = 10
             prio_fleet_df.loc[
-                prio_fleet_df["vehicleName"]
+                prio_fleet_df[van_name_col]
                 .astype(str)
                 .str.strip()
                 .isin(prio_vans_selected),
@@ -358,9 +362,10 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
             driver_option_map[display_label] = idx
 
           used_vans = roster_df["Van Bumper"].astype(str).str.strip().tolist()
+          van_name_col_act = next((c for c in active_fleet_df.columns if str(c).strip().lower() in ['van bumper', 'vehiclename', 'bumper']), active_fleet_df.columns[0])
           active_van_names = (
-              active_fleet_df["vehicleName"].astype(str).str.strip().tolist()
-              if "vehicleName" in active_fleet_df.columns
+              active_fleet_df[van_name_col_act].astype(str).str.strip().tolist()
+              if not active_fleet_df.empty
               else []
           )
           unassigned_vans = [v for v in active_van_names if v not in used_vans]
@@ -451,16 +456,19 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
                 target_idx = driver_option_map[van_target_sel]
                 old_van = roster_df.at[target_idx, "Van Bumper"]
 
+                fleet_name_col = next((c for c in fleet.columns if str(c).strip().lower() in ['van bumper', 'vehiclename', 'bumper']), fleet.columns[0])
+                st_size_col = next((c for c in fleet.columns if str(c).strip().lower() in ['size bracket', 'st', 'servicetype']), fleet.columns[0])
+
                 van_matches = (
                     fleet[
-                        fleet["vehicleName"].astype(str).str.strip()
+                        fleet[fleet_name_col].astype(str).str.strip()
                         == str(new_van_sel).strip()
                     ]
-                    if "vehicleName" in fleet.columns
+                    if not fleet.empty
                     else pd.DataFrame()
                 )
                 sel_st = (
-                    str(van_matches.iloc[0].get("ST", "M")).strip()
+                    str(van_matches.iloc[0].get(st_size_col, "M")).strip()
                     if not van_matches.empty
                     else "M"
                 )
@@ -509,16 +517,19 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
               )
 
               if st.button("Add Sweeper to Roster"):
+                fleet_name_col = next((c for c in fleet.columns if str(c).strip().lower() in ['van bumper', 'vehiclename', 'bumper']), fleet.columns[0])
+                st_size_col = next((c for c in fleet.columns if str(c).strip().lower() in ['size bracket', 'st', 'servicetype']), fleet.columns[0])
+
                 van_matches = (
                     fleet[
-                        fleet["vehicleName"].astype(str).str.strip()
+                        fleet[fleet_name_col].astype(str).str.strip()
                         == str(selected_swp_van).strip()
                     ]
-                    if "vehicleName" in fleet.columns
+                    if not fleet.empty
                     else pd.DataFrame()
                 )
                 sel_st = (
-                    str(van_matches.iloc[0].get("ST", "M")).strip()
+                    str(van_matches.iloc[0].get(st_size_col, "M")).strip()
                     if not van_matches.empty
                     else "M"
                 )
@@ -721,16 +732,19 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
                 chosen_van = "UNASSIGNED"
 
               if chosen_van != "UNASSIGNED" and chosen_van != "NO VANS AVAILABLE":
+                fleet_name_col = next((c for c in fleet.columns if str(c).strip().lower() in ['van bumper', 'vehiclename', 'bumper']), fleet.columns[0])
+                st_size_col = next((c for c in fleet.columns if str(c).strip().lower() in ['size bracket', 'st', 'servicetype']), fleet.columns[0])
+
                 van_matches = (
                     fleet[
-                        fleet["vehicleName"].astype(str).str.strip()
+                        fleet[fleet_name_col].astype(str).str.strip()
                         == str(chosen_van).strip()
                     ]
-                    if "vehicleName" in fleet.columns
+                    if not fleet.empty
                     else pd.DataFrame()
                 )
                 sel_st = (
-                    str(van_matches.iloc[0].get("ST", "M")).strip()
+                    str(van_matches.iloc[0].get(st_size_col, "M")).strip()
                     if not van_matches.empty
                     else "M"
                 )
