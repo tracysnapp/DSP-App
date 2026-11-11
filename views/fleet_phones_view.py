@@ -28,6 +28,19 @@ def render_fleet_tab():
     with tab_fleet_view:
         st.markdown("### Fleet Vehicle Master List")
 
+        # --- QUICK SUMMARY COUNT METRICS (XL, L, M) ---
+        if fleet_df is not None and not fleet_df.empty and "Size Bracket" in fleet_df.columns:
+            size_counts = fleet_df["Size Bracket"].str.strip().str.upper().value_counts()
+            xl_count = int(size_counts.get("XL", 0))
+            l_count = int(size_counts.get("L", 0))
+            m_count = int(size_counts.get("M", 0))
+
+            m_col1, m_col2, m_col3 = st.columns(3)
+            m_col1.metric("XL Vans", xl_count)
+            m_col2.metric("L Vans", l_count)
+            m_col3.metric("M Vans", m_count)
+            st.markdown("---")
+
         # --- ADD / REMOVE VEHICLE EXPANDER ---
         with st.expander("➕ / 🗑️ Add or Remove Fleet Vehicle", expanded=False):
             col_add_v, col_rem_v = st.columns(2)
@@ -47,7 +60,6 @@ def render_fleet_tab():
                             st.error("Van Bumper number is required.")
                         else:
                             current_fleet = fleet_df.copy() if fleet_df is not None else pd.DataFrame()
-                            # Check if bumper already exists
                             existing_bumpers = [str(x).strip().upper() for x in current_fleet.get("Van Bumper", [])]
                             if new_bumper.strip().upper() in existing_bumpers:
                                 st.error(f"Van Bumper '{new_bumper.strip()}' already exists in the fleet master list.")
@@ -128,7 +140,6 @@ def render_fleet_tab():
     with tab_phones_view:
         st.markdown("### Dispatch Phone & Device Inventory")
 
-        # --- ADD / REMOVE PHONE EXPANDER ---
         with st.expander("➕ / 🗑️ Add or Remove Mobile Device / Phone", expanded=False):
             col_add_p, col_rem_p = st.columns(2)
             
