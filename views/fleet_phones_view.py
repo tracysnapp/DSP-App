@@ -34,11 +34,11 @@ def render_fleet_tab():
                 status_options = ["UP", "DOWN", "MAINTENANCE", "RETIRED"]
                 fleet_config = {
                     "vehicleName": st.column_config.TextColumn("Van Bumper", disabled=True),
-                    "vin": st.column_config.TextColumn("VIN", disabled=True),
-                    "ST": st.column_config.TextColumn("Size Bracket", disabled=True),
-                    "type_clean": st.column_config.TextColumn("Vehicle Type", disabled=True),
+                    "vin_clean": st.column_config.TextColumn("VIN", disabled=True),
+                    "serviceType_clean": st.column_config.TextColumn("Size Bracket", disabled=True),
                     "status_clean": st.column_config.SelectboxColumn("Status", options=status_options, required=True),
-                    "remarks": st.column_config.TextColumn("Remarks / Notes")
+                    "last_driven_clean": st.column_config.TextColumn("Last Driven", disabled=True),
+                    "remarks_clean": st.column_config.TextColumn("Remarks / Notes")
                 }
 
                 edited_fleet = st.data_editor(
