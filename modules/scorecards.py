@@ -2,7 +2,7 @@ import os
 import re
 import pandas as pd
 from difflib import SequenceMatcher
-from engine import SCORECARDS_PATH, safe_save_dataframe, load_local_incidents_log
+from engine import SCORECARDS_PATH, safe_save_dataframe, load_local_incidents_log, load_dataframe_auto
 
 def normalize_name(name_str):
     """
@@ -276,17 +276,19 @@ def append_to_master_scorecards_ledger(new_scorecard_df):
     """
     Appends the newly calculated weekly scorecard atomically to master_scorecards.xlsx.
     Deduplicates on (Week, Driver Name) so re-uploading updates existing records cleanly.
+    Supports both Local and Cloud (GCS) storage modes.
     """
     if new_scorecard_df is None or new_scorecard_df.empty:
         return pd.DataFrame()
 
-    if os.path.exists(SCORECARDS_PATH):
+    existing_df = load_dataframe_auto(SCORECARDS_PATH)
+
+    if not existing_df.empty:
         try:
-            existing_df = pd.read_excel(SCORECARDS_PATH) if SCORECARDS_PATH.endswith(('.xlsx', '.xls')) else pd.read_csv(SCORECARDS_PATH)
             combined_df = pd.concat([existing_df, new_scorecard_df], ignore_index=True)
             combined_df = combined_df.drop_duplicates(subset=['Week', 'Driver Name'], keep='last').reset_index(drop=True)
         except Exception as e:
-            print(f"Error loading existing scorecards ledger: {e}")
+            print(f"Error combining existing scorecards ledger: {e}")
             combined_df = new_scorecard_df
     else:
         combined_df = new_scorecard_df
@@ -317,7 +319,6 @@ def get_all_time_leaderboard(master_scorecards_df, min_lifetime_deliveries=1000,
 
     score_col = 'Unified_Composite_Score' if 'Unified_Composite_Score' in df.columns else 'Overall Score'
 
-    # FIXED: Strip '%' characters prior to numeric casting
     df[score_col] = pd.to_numeric(df[score_col].astype(str).str.replace('%', ''), errors='coerce').fillna(0.0)
     df['Packages Delivered'] = pd.to_numeric(df.get('Packages Delivered', 0), errors='coerce').fillna(0)
     df['weighted_score_prod'] = df[score_col] * df['Packages Delivered']
