@@ -31,7 +31,8 @@ def render_fleet_tab():
             if is_admin:
                 st.caption("Editable view (Admin Mode). Changes update local and cloud storage.")
                 
-                status_options = ["UP", "DOWN", "MAINTENANCE", "RETIRED"]
+                # Restricted to UP or DOWN dropdown options per user requirement
+                status_options = ["UP", "DOWN"]
                 fleet_config = {
                     "vehicleName": st.column_config.TextColumn("Van Bumper", disabled=True),
                     "vin_clean": st.column_config.TextColumn("VIN", disabled=True),
