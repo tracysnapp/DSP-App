@@ -336,6 +336,8 @@ def update_van_last_driven(van_bumper, activity_date=None):
     if not date_col:
       date_col = "Last Driven"
       fleet_df[date_col] = ""
+    else:
+      fleet_df[date_col] = fleet_df[date_col].astype(object)
       
     mask = fleet_df[bumper_col].astype(str).str.strip().str.upper() == str(van_bumper).strip().upper()
     if mask.any():
@@ -545,3 +547,4 @@ def save_driver_incident(
   safe_save_dataframe(updated_df, INCIDENTS_LOG_PATH)
   load_local_incidents_log.clear()
   return updated_df
+```[cite: 1]
