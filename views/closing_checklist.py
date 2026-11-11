@@ -1,7 +1,7 @@
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
-from engine import log_dispatch_action, save_daily_closing_checklist
+from engine import log_dispatch_action, save_daily_closing_checklist, update_van_last_driven
 from modules.roster import update_closing_checklist_assignments, get_sorted_roster
 
 
@@ -9,6 +9,32 @@ def render_closing_checklist_tab():
     st.subheader("📝 Daily Closing & Debrief Checklist")
 
     active_user = st.session_state.get("user_name", "Dispatcher")
+
+    # Button / Action to Generate/Initialize Closing Checklist from Current Roster
+    if "current_roster" in st.session_state and not st.session_state["current_roster"].empty:
+        col_gen1, col_gen2 = st.columns([2, 2])
+        with col_gen1:
+            if st.button("🚀 Generate Closing Checklist from Roster", type="primary", use_container_width=True):
+                update_closing_checklist_assignments(
+                    st.session_state["current_roster"], st.session_state
+                )
+                
+                # Automatically record last driven date for all vans assigned on the roster
+                roster_df = st.session_state["current_roster"]
+                if "Van Bumper" in roster_df.columns:
+                    van_bumpers = roster_df["Van Bumper"].dropna().unique()
+                    today_str = pd.Timestamp.now().strftime("%Y-%m-%d")
+                    for v in van_bumpers:
+                        v_str = str(v).strip()
+                        if v_str and v_str.upper() not in ["UNASSIGNED", "NAN", "NONE", "N/A", ""]:
+                            update_van_last_driven(v_str, activity_date=today_str)
+                            
+                log_dispatch_action(
+                    "Generated Daily Closing Checklist and updated van last driven records.",
+                    username=active_user,
+                )
+                st.toast("Closing checklist generated and van last driven dates updated!", icon="🚐")
+                st.rerun()
 
     if (
         "closing_df" not in st.session_state
@@ -46,18 +72,24 @@ def render_closing_checklist_tab():
         with c1:
             st.caption("Track return of equipment, gas level, and route debrief status.")
         with c2:
-            # Placeholder or spacer column for balance if needed, or save button management
             pass
         with c3:
             if st.button(
                 "💾 Save Debrief Updates", type="primary", use_container_width=True
             ):
                 save_daily_closing_checklist(st.session_state["closing_df"])
+                
+                # Also ensure last driven dates are recorded upon saving debriefs
+                for _, row in st.session_state["closing_df"].iterrows():
+                    v_num = str(row.get("Van", "")).strip()
+                    if v_num and v_num.upper() not in ["UNASSIGNED", "NAN", "NONE", "N/A", ""]:
+                        update_van_last_driven(v_num)
+
                 log_dispatch_action(
-                    "Saved Daily Closing & Debrief Checklist state.",
+                    "Saved Daily Closing & Debrief Checklist state & updated fleet last driven.",
                     username=active_user,
                 )
-                st.toast("Closing checklist saved to disk & GCS!", icon="📝")
+                st.toast("Closing checklist saved and fleet recency updated!", icon="📝")
                 st.rerun()
 
         closing_config = {
@@ -117,13 +149,11 @@ def render_closing_checklist_tab():
             on_change=on_closing_change,
         )
 
-        # Generate printable HTML checklist view utilizing same formatting logic as roster view
         printable_closing_df = get_sorted_roster(st.session_state["closing_df"]) if 'Route' in st.session_state["closing_df"].columns else st.session_state["closing_df"]
 
         st.markdown("---")
         st.subheader("🖨️ Clipboard Print Preview (Closing & Debrief Checklist)")
 
-        # Build clean standalone HTML layout for print preview component
         html_closing_view = f"""
         <!DOCTYPE html>
         <html>
