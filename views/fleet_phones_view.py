@@ -28,38 +28,44 @@ def render_fleet_tab():
     with tab_fleet_view:
         st.markdown("### Fleet Vehicle Master List")
         if fleet_df is not None and not fleet_df.empty:
-            if is_admin:
-                st.caption("Editable view (Admin Mode). Changes update local and cloud storage.")
-                
-                # Restricted to UP or DOWN dropdown options per user requirement
-                status_options = ["UP", "DOWN"]
-                fleet_config = {
-                    "vehicleName": st.column_config.TextColumn("Van Bumper", disabled=True),
-                    "vin_clean": st.column_config.TextColumn("VIN", disabled=True),
-                    "serviceType_clean": st.column_config.TextColumn("Size Bracket", disabled=True),
-                    "status_clean": st.column_config.SelectboxColumn("Status", options=status_options, required=True),
-                    "last_driven_clean": st.column_config.TextColumn("Last Driven", disabled=True),
-                    "remarks_clean": st.column_config.TextColumn("Remarks / Notes")
-                }
+            st.caption("Click any van's **Status** cell to toggle between **UP** and **DOWN**. Save changes when finished.")
+            
+            # Interactive UP/DOWN dropdown options for all users
+            status_options = ["UP", "DOWN"]
+            
+            # Map column configuration dynamically matching clean or raw column names
+            status_col = 'status_clean' if 'status_clean' in fleet_df.columns else ('Status' if 'Status' in fleet_df.columns else fleet_df.columns[0])
+            name_col = 'vehicleName' if 'vehicleName' in fleet_df.columns else fleet_df.columns[0]
+            vin_col = 'vin_clean' if 'vin_clean' in fleet_df.columns else ('VIN' if 'VIN' in fleet_df.columns else fleet_df.columns[0])
+            st_col = 'serviceType_clean' if 'serviceType_clean' in fleet_df.columns else ('Service Type' if 'Service Type' in fleet_df.columns else fleet_df.columns[0])
+            driven_col = 'last_driven_clean' if 'last_driven_clean' in fleet_df.columns else ('Last Driven' if 'Last Driven' in fleet_df.columns else fleet_df.columns[0])
+            remarks_col = 'remarks_clean' if 'remarks_clean' in fleet_df.columns else ('Remarks' if 'Remarks' in fleet_df.columns else fleet_df.columns[-1])
 
-                edited_fleet = st.data_editor(
-                    fleet_df,
-                    column_config=fleet_config,
-                    use_container_width=True,
-                    hide_index=True,
-                    key="fleet_editor_key"
-                )
+            fleet_config = {
+                name_col: st.column_config.TextColumn("Van Bumper", disabled=True),
+                vin_col: st.column_config.TextColumn("VIN", disabled=True),
+                st_col: st.column_config.TextColumn("Size Bracket", disabled=True),
+                status_col: st.column_config.SelectboxColumn("Status (UP/DOWN)", options=status_options, required=True),
+                driven_col: st.column_config.TextColumn("Last Driven", disabled=True),
+                remarks_col: st.column_config.TextColumn("Remarks / Maintenance Notes")
+            }
 
-                if st.button("💾 Save Fleet Vehicle Changes", type="primary"):
-                    st.session_state['fleet_df'] = process_fleet_data(edited_fleet)
-                    safe_save_dataframe(st.session_state['fleet_df'], MASTER_FLEET_PATH)
-                    load_local_fleet.clear()
-                    log_dispatch_action("Updated Fleet Vehicle Status master record.", username=active_user)
-                    st.toast("Fleet vehicle status saved!", icon="🚐")
-                    st.rerun()
-            else:
-                st.caption("Read-Only Dispatch View.")
-                st.dataframe(fleet_df, use_container_width=True, hide_index=True)
+            edited_fleet = st.data_editor(
+                fleet_df,
+                column_config=fleet_config,
+                use_container_width=True,
+                hide_index=True,
+                key="fleet_editor_key"
+            )
+
+            if st.button("💾 Save Fleet Vehicle Changes", type="primary", use_container_width=True):
+                updated_fleet = process_fleet_data(edited_fleet)
+                st.session_state['fleet_df'] = updated_fleet
+                safe_save_dataframe(updated_fleet, MASTER_FLEET_PATH)
+                load_local_fleet.clear()
+                log_dispatch_action("Updated Fleet Vehicle Status master record.", username=active_user)
+                st.toast("Fleet vehicle status saved!", icon="🚐")
+                st.rerun()
         else:
             st.warning("No fleet data available. Please verify master_fleet.xlsx file exists.")
 
