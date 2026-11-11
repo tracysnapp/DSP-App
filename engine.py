@@ -343,7 +343,14 @@ def update_van_last_driven(van_bumper, activity_date=None):
     if mask.any():
       fleet_df.loc[mask, date_col] = activity_date
       safe_save_dataframe(fleet_df, MASTER_FLEET_PATH)
+      
+      # Clear caches so the new dates register across the app instantly
       load_local_fleet.clear()
+      get_van_last_driven_dict.clear()
+      
+      # Update active session state if loaded
+      if "fleet_df" in st.session_state:
+        st.session_state["fleet_df"] = load_local_fleet()
 
 
 def process_access_data(access_df):
