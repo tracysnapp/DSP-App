@@ -1,17 +1,17 @@
 import pandas as pd
 
 def process_fleet_data(vans_df):
-    """Cleans and normalizes master_fleet.xlsx columns with proper typed values, including Last Driven dates."""
+    """Cleans and normalizes master_fleet.xlsx columns with proper typed values, ensuring UP/DOWN status normalization."""
     if vans_df is None or vans_df.empty:
         return pd.DataFrame()
 
     df = vans_df.copy()
     bumper_col = next((c for c in df.columns if str(c).strip().lower() in ['bumper #', 'bumper', 'vehiclename']), None)
-    st_col = next((c for c in df.columns if str(c).strip().lower() in ['st', 'servicetype']), None)
-    status_col = next((c for c in df.columns if str(c).strip().lower() in ['status']), None)
-    vin_col = next((c for c in df.columns if str(c).strip().lower() in ['vin']), None)
-    driven_col = next((c for c in df.columns if str(c).strip().lower() in ['last driven', 'last_driven', 'driven date']), None)
-    remarks_col = next((c for c in df.columns if str(c).strip().lower() in ['remarks', 'notes', 'remark']), None)
+    st_col = next((c for c in df.columns if str(c).strip().lower() in ['st', 'servicetype', 'servicetype_clean']), None)
+    status_col = next((c for c in df.columns if str(c).strip().lower() in ['status', 'status_clean']), None)
+    vin_col = next((c for c in df.columns if str(c).strip().lower() in ['vin', 'vin_clean']), None)
+    driven_col = next((c for c in df.columns if str(c).strip().lower() in ['last driven', 'last_driven', 'driven date', 'last_driven_clean']), None)
+    remarks_col = next((c for c in df.columns if str(c).strip().lower() in ['remarks', 'notes', 'remark', 'remarks_clean']), None)
 
     def clean_str(val):
         if pd.isna(val):
@@ -23,8 +23,12 @@ def process_fleet_data(vans_df):
             return ""
         return s
 
+    def clean_status(val):
+        s = clean_str(val).upper()
+        return "DOWN" if s == "DOWN" else "UP"
+
     df['vehicleName'] = df[bumper_col].apply(clean_str) if bumper_col else 'UNNAMED'
-    df['status_clean'] = df[status_col].astype(str).str.strip().str.upper() if status_col else 'UP'
+    df['status_clean'] = df[status_col].apply(clean_status) if status_col else 'UP'
     df['serviceType_clean'] = df[st_col].astype(str).str.strip().str.upper() if st_col else 'M'
     df['vin_clean'] = df[vin_col].apply(clean_str) if vin_col else df['vehicleName']
     df['last_driven_clean'] = df[driven_col].apply(clean_str) if driven_col else ''
