@@ -1,17 +1,19 @@
 import pandas as pd
 
 def process_fleet_data(vans_df):
-    """Cleans and normalizes master_fleet.xlsx columns with proper typed values, ensuring UP/DOWN status normalization."""
+    """Cleans and normalizes master_fleet.xlsx columns with standardized headers and UP/DOWN status values."""
     if vans_df is None or vans_df.empty:
         return pd.DataFrame()
 
     df = vans_df.copy()
-    bumper_col = next((c for c in df.columns if str(c).strip().lower() in ['bumper #', 'bumper', 'vehiclename']), None)
-    st_col = next((c for c in df.columns if str(c).strip().lower() in ['st', 'servicetype', 'servicetype_clean']), None)
+    
+    # Identify source columns flexibly
+    bumper_col = next((c for c in df.columns if str(c).strip().lower() in ['bumper #', 'bumper', 'vehiclename', 'van bumper']), df.columns[0])
+    st_col = next((c for c in df.columns if str(c).strip().lower() in ['st', 'servicetype', 'size bracket']), None)
     status_col = next((c for c in df.columns if str(c).strip().lower() in ['status', 'status_clean']), None)
     vin_col = next((c for c in df.columns if str(c).strip().lower() in ['vin', 'vin_clean']), None)
-    driven_col = next((c for c in df.columns if str(c).strip().lower() in ['last driven', 'last_driven', 'driven date', 'last_driven_clean']), None)
-    remarks_col = next((c for c in df.columns if str(c).strip().lower() in ['remarks', 'notes', 'remark', 'remarks_clean']), None)
+    driven_col = next((c for c in df.columns if str(c).strip().lower() in ['last driven', 'last_driven', 'driven date']), None)
+    remarks_col = next((c for c in df.columns if str(c).strip().lower() in ['remarks', 'notes', 'remark']), None)
 
     def clean_str(val):
         if pd.isna(val):
@@ -27,14 +29,15 @@ def process_fleet_data(vans_df):
         s = clean_str(val).upper()
         return "DOWN" if s == "DOWN" else "UP"
 
-    df['vehicleName'] = df[bumper_col].apply(clean_str) if bumper_col else 'UNNAMED'
-    df['status_clean'] = df[status_col].apply(clean_status) if status_col else 'UP'
-    df['serviceType_clean'] = df[st_col].astype(str).str.strip().str.upper() if st_col else 'M'
-    df['vin_clean'] = df[vin_col].apply(clean_str) if vin_col else df['vehicleName']
-    df['last_driven_clean'] = df[driven_col].apply(clean_str) if driven_col else ''
-    df['remarks_clean'] = df[remarks_col].apply(clean_str) if remarks_col else ''
+    out = pd.DataFrame()
+    out['Van Bumper'] = df[bumper_col].apply(clean_str) if bumper_col else 'UNNAMED'
+    out['VIN'] = df[vin_col].apply(clean_str) if vin_col else out['Van Bumper']
+    out['Size Bracket'] = df[st_col].astype(str).str.strip().str.upper() if st_col else 'M'
+    out['Status'] = df[status_col].apply(clean_status) if status_col else 'UP'
+    out['Last Driven'] = df[driven_col].apply(clean_str) if driven_col else ''
+    out['Remarks'] = df[remarks_col].apply(clean_str) if remarks_col else ''
     
-    return df
+    return out
 
 def process_phone_data(phones_df):
     """Cleans and standardizes master_phones.xlsx data."""
