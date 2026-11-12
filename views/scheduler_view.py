@@ -1,4 +1,5 @@
 import os
+import json
 from datetime import datetime, timedelta
 import pandas as pd
 import streamlit as st
@@ -12,6 +13,26 @@ from engine import (
 from modules.schedule import generate_discord_schedule, send_discord_webhook
 
 LONG_RANGE_PTO_PATH = "data/long_range_pto.csv"
+WEEKLY_TARGETS_PATH = "data/weekly_targets.json"
+
+
+def load_saved_targets():
+  if os.path.exists(WEEKLY_TARGETS_PATH):
+    try:
+      with open(WEEKLY_TARGETS_PATH, "r") as f:
+        return json.load(f)
+    except Exception:
+      pass
+  return {}
+
+
+def save_targets_to_disk(targets_dict):
+  try:
+    os.makedirs(os.path.dirname(WEEKLY_TARGETS_PATH), exist_ok=True)
+    with open(WEEKLY_TARGETS_PATH, "w") as f:
+      json.dump(targets_dict, f, indent=2)
+  except Exception as e:
+    print(f"Error saving targets: {e}")
 
 
 def get_amazon_week_1_start(year: int) -> datetime:
@@ -85,6 +106,9 @@ def render_scheduler_tab():
   if "pto_df" not in st.session_state:
     st.session_state["pto_df"] = load_long_range_pto()
 
+  if "weekly_targets_dict" not in st.session_state:
+    st.session_state["weekly_targets_dict"] = load_saved_targets()
+
   # ==========================================
   # TAB 1: WEEKLY SHIFT SCHEDULER (AMAZON WEEKS 1-53)
   # ==========================================
@@ -122,16 +146,17 @@ def render_scheduler_tab():
     with c_info:
       st.markdown("### 🎯 Daily Route Targets (Amazon Station Volume)")
       st.caption(
-          "Adjust expected route counts per day to match fluctuating station"
-          " volume."
+          "Adjust expected route counts per day. Changes save automatically."
       )
 
     day_keys = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
     day_headers = [f"{d_date.strftime('%a %d %b')}" for d_date in week_dates]
     day_key_to_header = dict(zip(day_keys, day_headers))
 
-    target_cols = st.columns(7)
-    expected_routes_dict = {}
+    # Retrieve stored targets for this specific year and week, or use defaults
+    week_key_str = f"{sel_year}-W{sel_amazon_week}"
+    stored_week_targets = st.session_state["weekly_targets_dict"].get(week_key_str, {})
+
     default_targets = {
         "Sun": 26,
         "Mon": 25,
@@ -142,15 +167,32 @@ def render_scheduler_tab():
         "Sat": 0,
     }
 
+    target_cols = st.columns(7)
+    expected_routes_dict = {}
+    targets_changed = False
+
     for i, d_key in enumerate(day_keys):
       d_header = day_key_to_header[d_key]
+      default_val = stored_week_targets.get(d_key, default_targets.get(d_key, 25))
+      
       with target_cols[i]:
-        expected_routes_dict[d_header] = st.number_input(
+        new_val = st.number_input(
             d_header,
             min_value=0,
-            value=default_targets.get(d_key, 25),
-            key=f"target_route_{d_key}",
+            value=int(default_val),
+            key=f"target_route_{sel_year}_{sel_amazon_week}_{d_key}",
         )
+        expected_routes_dict[d_header] = new_val
+        if new_val != default_val:
+          targets_changed = True
+
+    # Auto-save targets if modified
+    if targets_changed:
+      if week_key_str not in st.session_state["weekly_targets_dict"]:
+        st.session_state["weekly_targets_dict"][week_key_str] = {}
+      for d_key in day_keys:
+        st.session_state["weekly_targets_dict"][week_key_str][d_key] = expected_routes_dict[day_key_to_header[d_key]]
+      save_targets_to_disk(st.session_state["weekly_targets_dict"])
 
     if (
         "schedule_df" not in st.session_state
@@ -233,7 +275,6 @@ def render_scheduler_tab():
               + sch_df["Last Name"].astype(str)
           ).str.strip()
 
-      # Sanitize any "none", "nan", or None values in shift columns to blank ""
       for dh in day_headers:
         if dh in sch_df.columns:
           sch_df[dh] = sch_df[dh].fillna("").astype(str)
@@ -413,7 +454,6 @@ def render_scheduler_tab():
         "Assign shift options. Leave cells blank if available but not scheduled. Long-range requests are auto-populated as 'Rqst Off'."
     )
 
-    # Added "" (blank option) at the beginning of shift options
     shift_options = [
         "",
         "Driver",
@@ -628,7 +668,7 @@ def render_scheduler_tab():
     }
 
     edited_pto_df = st.data_editor(
-        st.session_state["pto_df"],
+        st.session_state["schedule_df"] if "schedule_df" in st.session_state else pd.DataFrame(),
         column_config=pto_config,
         use_container_width=True,
         num_rows="dynamic",
@@ -636,31 +676,3 @@ def render_scheduler_tab():
         key="pto_editor_state",
         on_change=on_pto_change,
     )
-
-    c_p1, c_p2 = st.columns(2)
-    with c_p1:
-      if st.button(
-          "💾 Save Long-Range Calendar to Disk",
-          type="primary",
-          key="save_pto_disk",
-      ):
-        for col in edited_pto_df.columns:
-          edited_pto_df[col] = (
-              edited_pto_df[col].astype(str).replace("nan", "")
-          )
-
-        os.makedirs(os.path.dirname(LONG_RANGE_PTO_PATH), exist_ok=True)
-        edited_pto_df.to_csv(LONG_RANGE_PTO_PATH, index=False)
-        st.session_state["pto_df"] = edited_pto_df.copy()
-
-        if "schedule_df" in st.session_state:
-          del st.session_state["schedule_df"]
-        if "loaded_week_num" in st.session_state:
-          del st.session_state["loaded_week_num"]
-
-        log_dispatch_action(
-            "Updated long-range PTO calendar database.", username=active_user
-        )
-        st.success(
-            "Long-range calendar saved and weekly schedule synchronized!"
-        )
