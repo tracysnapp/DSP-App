@@ -127,6 +127,65 @@ def generate_discord_top_drivers(top_drivers_df, week_str="2026-W41", min_pkg_th
     md += "Keep up the fantastic work team! 🚛💨"
     return md
 
+def auto_generate_pattern_weekly_schedule(schedule_df, day_headers, expected_routes_dict, drivers_df=None, target_shifts_per_driver=4):
+    """
+    Automatically assigns shifts targeting 4 shifts/week while respecting:
+    1. Driver-specific 'Preferred Shifts' (Front Half, Back Half, or Any).
+    2. Existing 'Rqst Off' or calendar constraints.
+    3. Daily route volume targets.
+    """
+    if schedule_df is None or schedule_df.empty:
+        return schedule_df
+
+    df = schedule_df.copy()
+    work_shifts = ["Driver", "Helper", "OPS-AM", "OPS-PM"]
+
+    pref_map = {}
+    if drivers_df is not None and not drivers_df.empty and "Driver Name" in drivers_df.columns:
+        p_col = next((c for c in drivers_df.columns if "pref" in c.lower() or "shift" in c.lower() or "pattern" in c.lower()), None)
+        if p_col:
+            for _, r in drivers_df.iterrows():
+                d_name = str(r.get("Driver Name", "")).strip().lower()
+                pref_val = str(r.get(p_col, "Any")).strip()
+                pref_map[d_name] = pref_val
+
+    front_half_indices = [0, 1, 2, 3]  # Sun, Mon, Tue, Wed
+    back_half_indices = [3, 4, 5, 6]   # Wed, Thu, Fri, Sat
+
+    for idx, row in df.iterrows():
+        d_name = str(row.get("Driver Name", "")).strip().lower()
+        current_shifts = sum(1 for dh in day_headers if str(row.get(dh, "")).strip() in work_shifts)
+        if current_shifts >= target_shifts_per_driver:
+            continue
+
+        driver_pref = pref_map.get(d_name, "Any").title()
+
+        if "Front" in driver_pref:
+            target_indices = front_half_indices
+        elif "Back" in driver_pref:
+            target_indices = back_half_indices
+        else:
+            target_indices = range(len(day_headers))
+
+        for day_idx in target_indices:
+            if current_shifts >= target_shifts_per_driver:
+                break
+            
+            dh = day_headers[day_idx]
+            existing_val = str(row.get(dh, "")).strip()
+            
+            if existing_val != "" and existing_val.lower() not in ["none", "nan"]:
+                continue
+
+            day_current_count = len(df[df[dh].isin(work_shifts)])
+            day_target = expected_routes_dict.get(dh, 25)
+
+            if day_current_count < day_target:
+                df.at[idx, dh] = "Driver"
+                current_shifts += 1
+
+    return df
+
 def calculate_driver_attendance_metrics(schedule_df, attendance_log_df):
     """
     Cross-references scheduled shift counts against logged infractions in attendance_log.xlsx.
@@ -136,8 +195,6 @@ def calculate_driver_attendance_metrics(schedule_df, attendance_log_df):
         return pd.DataFrame(columns=["Driver Name", "Scheduled Shifts", "Late Starts", "Call-Outs", "No-Shows", "Incomplete Shifts", "Total Infractions", "Reliability Rating"])
 
     records = []
-    
-    # Pre-aggregate infractions per driver from attendance_log.xlsx
     infractions_by_driver = {}
     if attendance_log_df is not None and not attendance_log_df.empty:
         for _, row in attendance_log_df.iterrows():
