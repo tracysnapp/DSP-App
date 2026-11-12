@@ -447,12 +447,12 @@ def render_scheduler_tab():
       )
 
     # ==========================================
-    # AUTO-SCHEDULER (PATTERN & 4-SHIFT TARGET)
+    # AUTO-SCHEDULER (SCORECARD RANK, PREFERENCES & 4-SHIFT TARGET)
     # ==========================================
-    with st.expander("🤖 Advanced Auto-Scheduler (Driver Preferences & 4 Shifts)", expanded=False):
-      st.caption("Automatically distribute shifts targeting 4 days per week respecting each driver's assigned shift pattern from their profile.")
+    with st.expander("🤖 Advanced Auto-Scheduler (Scorecard Priority, Preferences & 4 Shifts)", expanded=False):
+      st.caption("Automatically distribute shifts targeting 4 days per week prioritizing higher scorecard ranks and respecting driver shift patterns.")
       
-      if st.button("🚀 Run Pattern-Aware Auto-Scheduler", type="primary", key="btn_run_pattern_auto"):
+      if st.button("🚀 Run Scorecard-Prioritized Auto-Scheduler", type="primary", key="btn_run_pattern_auto"):
         updated_sch = auto_generate_pattern_weekly_schedule(
             st.session_state["schedule_df"],
             day_headers,
@@ -462,8 +462,8 @@ def render_scheduler_tab():
         )
 
         st.session_state["schedule_df"] = updated_sch.copy()
-        log_dispatch_action(f"Ran pattern-aware auto-scheduler for Amazon Week {sel_amazon_week}.", username=active_user)
-        st.success("Successfully auto-generated weekly schedule matching driver patterns and volume targets!")
+        log_dispatch_action(f"Ran scorecard-prioritized auto-scheduler for Amazon Week {sel_amazon_week}.", username=active_user)
+        st.success("Successfully auto-generated weekly schedule prioritizing scorecard ranks and volume targets!")
         st.rerun()
 
     # ==========================================
