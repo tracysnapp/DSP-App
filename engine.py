@@ -38,6 +38,9 @@ WEEKLY_SCHEDULE_PATH = os.getenv("WEEKLY_SCHEDULE_PATH", "weekly_schedule.xlsx")
 SCHEDULES_DIR = os.getenv("SCHEDULES_DIR", "schedules")
 LONG_RANGE_PTO_PATH = os.getenv("LONG_RANGE_PTO_PATH", "long_range_pto.xlsx")
 WEEKLY_TARGETS_PATH = os.getenv("WEEKLY_TARGETS_PATH", "weekly_targets.json")
+STANDING_SCHEDULES_PATH = os.getenv(
+    "STANDING_SCHEDULES_PATH", "standing_schedules.json"
+)
 SCORECARDS_PATH = os.getenv("SCORECARDS_PATH", "master_scorecards.xlsx")
 ATTENDANCE_LOG_PATH = os.getenv("ATTENDANCE_LOG_PATH", "attendance_log.xlsx")
 INCIDENTS_LOG_PATH = os.getenv("INCIDENTS_LOG_PATH", "master_incidents.xlsx")
@@ -580,7 +583,6 @@ def save_weekly_schedule_to_storage(
     return
   if year is not None and week_num is not None:
     safe_save_dataframe(df, get_week_schedule_path(year, week_num))
-  # Also keep legacy path updated as latest active schedule fallback
   safe_save_dataframe(df, WEEKLY_SCHEDULE_PATH)
   load_local_schedule.clear()
 
@@ -643,6 +645,28 @@ def load_weekly_targets_storage() -> dict:
 def save_weekly_targets_storage(targets_dict: dict):
   save_json_auto(targets_dict, WEEKLY_TARGETS_PATH)
   load_weekly_targets_storage.clear()
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def load_standing_schedules_storage() -> dict:
+  """
+    Loads standing / recurring fixed-day schedules keyed by driver name (lowercase):
+    {
+      "tracy snapp": {
+          "driver_name": "Tracy Snapp",
+          "days": ["Sun", "Mon", "Tue", "Wed"],
+          "shift": "OPS-AM",
+          "lock_only_fixed_days": True
+      }
+    }
+    """
+  data = load_json_auto(STANDING_SCHEDULES_PATH)
+  return data if isinstance(data, dict) else {}
+
+
+def save_standing_schedules_storage(rules_dict: dict):
+  save_json_auto(rules_dict, STANDING_SCHEDULES_PATH)
+  load_standing_schedules_storage.clear()
 
 
 @st.cache_data(ttl=60, show_spinner=False)
