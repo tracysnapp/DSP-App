@@ -153,7 +153,6 @@ def render_scheduler_tab():
     day_headers = [f"{d_date.strftime('%a %d %b')}" for d_date in week_dates]
     day_key_to_header = dict(zip(day_keys, day_headers))
 
-    # Retrieve stored targets for this specific year and week, or use defaults
     week_key_str = f"{sel_year}-W{sel_amazon_week}"
     stored_week_targets = st.session_state["weekly_targets_dict"].get(week_key_str, {})
 
@@ -186,7 +185,6 @@ def render_scheduler_tab():
         if new_val != default_val:
           targets_changed = True
 
-    # Auto-save targets if modified
     if targets_changed:
       if week_key_str not in st.session_state["weekly_targets_dict"]:
         st.session_state["weekly_targets_dict"][week_key_str] = {}
@@ -244,9 +242,18 @@ def render_scheduler_tab():
             sch_df["__dn_lower"] = sch_df["Driver Name"].astype(str).str.strip().str.lower()
             sch_df = sch_df[sch_df["__dn_lower"].isin(active_names)].drop(columns=["__dn_lower"]).reset_index(drop=True)
 
+        # Map legacy or date headers to current week's exact day headers
         for d_key, d_header in day_key_to_header.items():
-          if d_key in sch_df.columns and d_header not in sch_df.columns:
-            sch_df.rename(columns={d_key: d_header}, inplace=True)
+          if d_header not in sch_df.columns:
+            if d_key in sch_df.columns:
+              sch_df.rename(columns={d_key: d_header}, inplace=True)
+            else:
+              # Check if any old date header matches this day of week key
+              matching_old_col = next((c for c in sch_df.columns if c.startswith(d_key)), None)
+              if matching_old_col:
+                sch_df.rename(columns={matching_old_col: d_header}, inplace=True)
+              else:
+                sch_df[d_header] = ""
 
       if not sch_df.empty:
         if (
@@ -276,9 +283,10 @@ def render_scheduler_tab():
           ).str.strip()
 
       for dh in day_headers:
-        if dh in sch_df.columns:
-          sch_df[dh] = sch_df[dh].fillna("").astype(str)
-          sch_df.loc[sch_df[dh].str.strip().str.lower().isin(["none", "nan", "nat", "<na>"]), dh] = ""
+        if dh not in sch_df.columns:
+          sch_df[dh] = ""
+        sch_df[dh] = sch_df[dh].fillna("").astype(str)
+        sch_df.loc[sch_df[dh].str.strip().str.lower().isin(["none", "nan", "nat", "<na>"]), dh] = ""
 
       if not pto_data.empty and not sch_df.empty:
         for idx, d_row in sch_df.iterrows():
@@ -668,7 +676,7 @@ def render_scheduler_tab():
     }
 
     edited_pto_df = st.data_editor(
-        st.session_state["schedule_df"] if "schedule_df" in st.session_state else pd.DataFrame(),
+        st.session_state["pto_df"],
         column_config=pto_config,
         use_container_width=True,
         num_rows="dynamic",
