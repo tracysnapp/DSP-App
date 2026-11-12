@@ -1,672 +1,194 @@
-import os
-from datetime import datetime, timedelta
+import json
+import urllib.request
 import pandas as pd
-import streamlit as st
-from engine import (
-    DISCORD_WEBHOOK_URL,
-    WEEKLY_SCHEDULE_PATH,
-    load_local_schedule,
-    log_dispatch_action,
-    safe_save_dataframe,
-)
-from modules.schedule import generate_discord_schedule, send_discord_webhook
 
-LONG_RANGE_PTO_PATH = "data/long_range_pto.csv"
-
-
-def get_amazon_week_1_start(year: int) -> datetime:
-  """Returns the Sunday start date of Amazon Week 1 for a given operating year.
-  
-  Amazon Operating Years start on the Sunday of the week containing Jan 1st/4th.
-  """
-  if year == 2027:
-    return datetime(2027, 1, 3)
-  elif year == 2026:
-    return datetime(2025, 12, 28)
-  
-  jan_4 = datetime(year, 1, 4)
-  return jan_4 - timedelta(days=(jan_4.weekday() + 1) % 7)
-
-
-def get_amazon_week_dates(year: int, week_num: int):
-  """Calculates the 7 days (Sunday through Saturday) for a given Amazon week number."""
-  week_1_sun = get_amazon_week_1_start(year)
-  target_sun = week_1_sun + timedelta(weeks=week_num - 1)
-  return [target_sun + timedelta(days=i) for i in range(7)]
-
-
-def get_current_amazon_week_info():
-  """Returns (current_year, current_amazon_week_num) for today's date."""
-  today = datetime.today()
-  current_year = today.year
-
-  w1_start = get_amazon_week_1_start(current_year)
-
-  if today < w1_start:
-    op_year = current_year - 1
-    w1_start = get_amazon_week_1_start(op_year)
-  else:
-    next_w1_start = get_amazon_week_1_start(current_year + 1)
-    if today >= next_w1_start:
-      op_year = current_year + 1
-      w1_start = next_w1_start
-    else:
-      op_year = current_year
-
-  days_diff = (today - w1_start).days
-  week_num = (days_diff // 7) + 1
-  return op_year, week_num
-
-
-def load_long_range_pto():
-  if os.path.exists(LONG_RANGE_PTO_PATH):
-    try:
-      df = pd.read_csv(LONG_RANGE_PTO_PATH)
-      for col in df.columns:
-        df[col] = df[col].astype(str).replace("nan", "")
-      return df
-    except Exception:
-      pass
-  return pd.DataFrame(
-      columns=[
-          "Driver Name",
-          "Start Date",
-          "End Date",
-          "Category",
-          "Reason / Notes",
-      ]
-  )
-
-
-def render_scheduler_tab():
-  st.subheader("📅 JNAL Operations: Scheduling & Long-Range Calendar")
-
-  tab_weekly, tab_pto = st.tabs(
-      ["Weekly Shift Scheduler", "Long-Range PTO & Availability Calendar"]
-  )
-
-  drivers_df = st.session_state.get("drivers_df")
-  active_user = st.session_state.get("user_name", "Admin")
-
-  if "pto_df" not in st.session_state:
-    st.session_state["pto_df"] = load_long_range_pto()
-
-  # ==========================================
-  # TAB 1: WEEKLY SHIFT SCHEDULER (AMAZON WEEKS 1-53)
-  # ==========================================
-  with tab_weekly:
-    c_date, c_info = st.columns([1, 2])
-    with c_date:
-      curr_op_year, curr_amazon_week = get_current_amazon_week_info()
-
-      sel_year = st.selectbox(
-          "Operating Year",
-          options=[curr_op_year - 1, curr_op_year, curr_op_year + 1],
-          index=1,
-      )
-      
-      sel_amazon_week = st.number_input(
-          "Amazon Operating Week #",
-          min_value=1,
-          max_value=53,
-          value=curr_amazon_week,
-          step=1,
-      )
-
-      week_datetime_objs = get_amazon_week_dates(sel_year, int(sel_amazon_week))
-      week_dates = [dt.date() for dt in week_datetime_objs]
-
-      start_date = week_dates[0]
-      end_date = week_dates[6]
-
-      week_label = (
-          f"Amazon Week {sel_amazon_week} ({start_date.strftime('%d-%b')} to"
-          f" {end_date.strftime('%d-%b')})"
-      )
-      st.caption(f"**Cycle Window:** {week_label} *(Sun - Sat Operational)*")
-
-    with c_info:
-      st.markdown("### 🎯 Daily Route Targets (Amazon Station Volume)")
-      st.caption(
-          "Adjust expected route counts per day to match fluctuating station"
-          " volume."
-      )
-
-    day_keys = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
-    day_headers = [f"{d_date.strftime('%a %d %b')}" for d_date in week_dates]
-    day_key_to_header = dict(zip(day_keys, day_headers))
-
-    target_cols = st.columns(7)
-    expected_routes_dict = {}
-    default_targets = {
-        "Sun": 26,
-        "Mon": 25,
-        "Tue": 25,
-        "Wed": 28,
-        "Thu": 24,
-        "Fri": 24,
-        "Sat": 0,
-    }
-
-    for i, d_key in enumerate(day_keys):
-      d_header = day_key_to_header[d_key]
-      with target_cols[i]:
-        expected_routes_dict[d_header] = st.number_input(
-            d_header,
-            min_value=0,
-            value=default_targets.get(d_key, 25),
-            key=f"target_route_{d_key}",
-        )
-
-    if (
-        "schedule_df" not in st.session_state
-        or st.session_state["schedule_df"] is None
-        or st.session_state["schedule_df"].empty
-        or st.session_state.get("loaded_week_num") != sel_amazon_week
-    ):
-      loaded_sch = load_local_schedule()
-      pto_data = st.session_state["pto_df"]
-
-      if loaded_sch.empty and drivers_df is not None and not drivers_df.empty:
-        # Filter strictly for ACTIVE drivers only
-        active_drivers = drivers_df[
-            drivers_df["Status"].astype(str).str.strip().str.upper() == "ACTIVE"
-        ].copy() if "Status" in drivers_df.columns else drivers_df.copy()
-        
-        init_sch = []
-
-        for _, row in active_drivers.iterrows():
-          full_name = str(row.get("Driver Name", "")).strip()
-          parts = full_name.split(" ", 1)
-          first_name = parts[0] if len(parts) > 1 else full_name
-          last_name = parts[1] if len(parts) > 1 else ""
-
-          driver_row = {
-              "Driver Name": (
-                  f"{first_name} {last_name}".strip()
-                  if (first_name or last_name)
-                  else full_name
-              ),
-              "First Name": first_name,
-              "Last Name": last_name,
-              "Notes / Requests": "",
-          }
-          for dh in day_headers:
-            driver_row[dh] = "Off"
-
-          init_sch.append(driver_row)
-
-        sch_df = pd.DataFrame(init_sch)
-      else:
-        sch_df = loaded_sch.copy()
-        
-        # Also clean loaded schedule against active driver directory if available
-        if drivers_df is not None and not drivers_df.empty and "Status" in drivers_df.columns:
-          active_names = set(
-              drivers_df[drivers_df["Status"].astype(str).str.strip().str.upper() == "ACTIVE"]["Driver Name"]
-              .dropna().astype(str).str.strip().str.lower()
-          )
-          if active_names:
-            sch_df["__dn_lower"] = sch_df["Driver Name"].astype(str).str.strip().str.lower()
-            sch_df = sch_df[sch_df["__dn_lower"].isin(active_names)].drop(columns=["__dn_lower"]).reset_index(drop=True)
-
-        for d_key, d_header in day_key_to_header.items():
-          if d_key in sch_df.columns and d_header not in sch_df.columns:
-            sch_df.rename(columns={d_key: d_header}, inplace=True)
-
-      if not sch_df.empty:
-        if (
-            "First Name" not in sch_df.columns
-            or "Last Name" not in sch_df.columns
-        ):
-          if "Driver Name" in sch_df.columns:
-            fn_list, ln_list = [], []
-            for val in sch_df["Driver Name"]:
-              name_str = str(val).strip()
-              if "," in name_str:
-                p = name_str.split(",", 1)
-                ln_list.append(p[0].strip())
-                fn_list.append(p[1].strip())
-              else:
-                p = name_str.split(" ", 1)
-                fn_list.append(p[0].strip())
-                ln_list.append(p[1].strip() if len(p) > 1 else "")
-            sch_df["First Name"] = fn_list
-            sch_df["Last Name"] = ln_list
-
-        if "Driver Name" not in sch_df.columns:
-          sch_df["Driver Name"] = (
-              sch_df["First Name"].astype(str)
-              + " "
-              + sch_df["Last Name"].astype(str)
-          ).str.strip()
-
-      if not pto_data.empty and not sch_df.empty:
-        for idx, d_row in sch_df.iterrows():
-          fn = str(d_row.get("First Name", "")).strip()
-          ln = str(d_row.get("Last Name", "")).strip()
-          dn = str(d_row.get("Driver Name", "")).strip()
-
-          d_full = f"{fn} {ln}".strip().lower() if (fn or ln) else dn.lower()
-          d_reverse = (
-              f"{ln}, {fn}".strip().lower() if (fn or ln) else dn.lower()
-          )
-
-          notes_list = []
-          for _, pto_row in pto_data.iterrows():
-            pto_name = str(pto_row.get("Driver Name", "")).strip().lower()
-
-            if pto_name and (
-                pto_name == d_full
-                or pto_name == d_reverse
-                or (dn and pto_name == dn.lower())
-                or (d_full and pto_name in d_full)
-            ):
-              try:
-                p_start = pd.to_datetime(pto_row["Start Date"]).date()
-                p_end = pd.to_datetime(pto_row["End Date"]).date()
-                cat = str(pto_row.get("Category", ""))
-                note = str(pto_row.get("Reason / Notes", ""))
-
-                for day_idx, d_date in enumerate(week_dates):
-                  header_name = day_headers[day_idx]
-                  day_name_str = day_keys[day_idx]
-
-                  if p_start <= d_date <= p_end:
-                    if "No Sundays" in cat and day_name_str == "Sun":
-                      sch_df.at[idx, header_name] = "Rqst Off"
-                    elif cat in [
-                        "Approved PTO",
-                        "Unpaid Leave",
-                        "Appointment / Partial Off",
-                        "Other Constraint",
-                    ]:
-                      sch_df.at[idx, header_name] = "Rqst Off"
-
-                notes_list.append(
-                    f"{cat} ({p_start.strftime('%d-%b')} to"
-                    f" {p_end.strftime('%d-%b')}): {note}"
-                )
-              except Exception:
-                pass
-
-          if notes_list:
-            existing_notes = str(d_row.get("Notes / Requests", ""))
-            if existing_notes == "nan":
-              existing_notes = ""
-            combined = " | ".join(notes_list)
-            sch_df.at[idx, "Notes / Requests"] = (
-                f"{existing_notes} | {combined}".strip(" |")
-                if existing_notes
-                else combined
-            )
-
-      ordered_cols = ["Driver Name"] + day_headers
-      if "Notes / Requests" in sch_df.columns:
-        ordered_cols.append("Notes / Requests")
-
-      for c in ["First Name", "Last Name"]:
-        if c in sch_df.columns and c not in ordered_cols:
-          ordered_cols.append(c)
-
-      existing_ordered = [c for c in ordered_cols if c in sch_df.columns]
-      sch_df = sch_df[existing_ordered]
-
-      sort_cols = [
-          c
-          for c in ["First Name", "Last Name", "Driver Name"]
-          if c in sch_df.columns
-      ]
-      if sort_cols:
-        st.session_state["schedule_df"] = sch_df.sort_values(
-            by=sort_cols, ascending=True
-        ).reset_index(drop=True)
-      else:
-        st.session_state["schedule_df"] = sch_df.copy()
-
-      st.session_state["loaded_week_num"] = sel_amazon_week
-
-    def on_schedule_change():
-      changes = st.session_state.get("weekly_schedule_editor_state")
-      if changes and "schedule_df" in st.session_state:
-        for row_idx, col_changes in changes.get("edited_rows", {}).items():
-          for col_name, new_val in col_changes.items():
-            if col_name in st.session_state["schedule_df"].columns:
-              st.session_state["schedule_df"].at[row_idx, col_name] = new_val
-
-    st.markdown("### 📊 Live Coverage vs. Station Targets")
-    metrics_cols = st.columns(7)
-
-    work_shifts = ["Driver", "Helper", "OPS-AM", "OPS-PM"]
-    for i, d_header in enumerate(day_headers):
-      if d_header in st.session_state["schedule_df"].columns:
-        driver_count = len(
-            st.session_state["schedule_df"][
-                st.session_state["schedule_df"][d_header].isin(work_shifts)
-            ]
-        )
-      else:
-        driver_count = 0
-      day_target = expected_routes_dict.get(d_header, 0)
-      delta = driver_count - day_target
-      metrics_cols[i].metric(label=d_header, value=driver_count, delta=delta)
-
-    st.markdown("---")
+def send_discord_webhook(webhook_url, content_text):
+    """Posts plain or markdown-formatted message strings directly to a Discord channel via Webhook."""
+    if not webhook_url or not webhook_url.startswith("http"):
+        return False, "Invalid or missing Discord Webhook URL."
     
-    # ==========================================
-    # BULK MULTI-DRIVER SHIFT ASSIGNMENT TOOL
-    # ==========================================
-    with st.expander("⚡ Bulk Assign Shifts to Multiple Drivers", expanded=False):
-      st.caption("Select multiple drivers below, pick the target day(s) and shift type, then click apply.")
-      
-      all_schedule_drivers = (
-          st.session_state["schedule_df"]["Driver Name"].dropna().unique().tolist()
-          if "schedule_df" in st.session_state and not st.session_state["schedule_df"].empty
-          else []
-      )
-      
-      bulk_sel_drivers = st.multiselect("Select Drivers", options=all_schedule_drivers, key="bulk_drivers_sel")
-      
-      b_col1, b_col2 = st.columns(2)
-      with b_col1:
-        bulk_sel_days = st.multiselect("Select Days", options=day_headers, default=day_headers, key="bulk_days_sel")
-      with b_col2:
-        bulk_sel_shift = st.selectbox(
-            "Assign Shift Type",
-            options=["Driver", "Helper", "On-Call", "Off", "OPS-AM", "OPS-PM", "Rqst Off"],
-            key="bulk_shift_sel"
-        )
-        
-      if st.button("🚀 Apply Bulk Shift Assignment", type="primary", key="btn_apply_bulk"):
-        if not bulk_sel_drivers:
-          st.warning("Please select at least one driver.")
-        elif not bulk_sel_days:
-          st.warning("Please select at least one day.")
+    payload = {"content": content_text}
+    data = json.dumps(payload).encode('utf-8')
+    headers = {'Content-Type': 'application/json', 'User-Agent': 'Python-DSP-CommandCenter'}
+
+    try:
+        req = urllib.request.Request(webhook_url, data=data, headers=headers, method='POST')
+        with urllib.request.urlopen(req) as response:
+            if response.status in [200, 204]:
+                return True, "Successfully published announcement to Discord!"
+            return False, f"Discord returned HTTP status {response.status}"
+    except Exception as e:
+        return False, f"Failed to post to Discord: {str(e)}"
+
+def generate_discord_schedule(schedule_df, week_str="18-Oct to 24-Oct"):
+    """
+    Generates a tabular monospace Discord schedule announcement sorted alphabetically by First Name.
+    Supports Sun-Sat column headers and shift codes (Driver, Helper, OPS, Off, Rqst Off).
+    """
+    if schedule_df is None or schedule_df.empty:
+        return "```\nNo weekly schedule available.\n```"
+
+    df = schedule_df.copy()
+
+    if 'Last Name' not in df.columns or 'First Name' not in df.columns:
+        if 'Driver Name' in df.columns:
+            def split_name(val):
+                parts = str(val).strip().split(' ', 1)
+                if len(parts) == 2:
+                    return parts[1], parts[0]  # Last, First
+                return parts[0], ''
+            
+            df['Last Name'], df['First Name'] = zip(*df['Driver Name'].apply(split_name))
         else:
-          sch_df_ref = st.session_state["schedule_df"]
-          updated_count = 0
-          for idx, row in sch_df_ref.iterrows():
-            d_name = str(row.get("Driver Name", "")).strip()
-            if d_name in bulk_sel_drivers:
-              for d_day in bulk_sel_days:
-                if d_day in sch_df_ref.columns:
-                  sch_df_ref.at[idx, d_day] = bulk_sel_shift
-                  updated_count += 1
-          
-          st.session_state["schedule_df"] = sch_df_ref.copy()
-          log_dispatch_action(f"Bulk assigned shift '{bulk_sel_shift}' for {len(bulk_sel_drivers)} drivers across {len(bulk_sel_days)} days.", username=active_user)
-          st.success(f"Successfully updated shifts for {len(bulk_sel_drivers)} drivers!")
-          st.rerun()
+            df['Last Name'] = 'Driver'
+            df['First Name'] = ''
 
-    df_display = st.session_state["schedule_df"].copy()
-    existing_day_cols = [c for c in day_headers if c in df_display.columns]
-    df_display["Total Days"] = df_display[existing_day_cols].isin(
-        work_shifts
-    ).sum(axis=1)
+    days_order = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+    for d in days_order:
+        if d not in df.columns:
+            df[d] = 'Off'
 
-    display_cols = ["Driver Name"] + existing_day_cols
-    if "Total Days" in df_display.columns:
-      display_cols.append("Total Days")
-    if "Notes / Requests" in df_display.columns:
-      display_cols.append("Notes / Requests")
+    def clean_shift(val):
+        s = str(val).strip().upper()
+        if s in ['DRIVER']:
+            return 'Driver'
+        elif s in ['HELPER']:
+            return 'Helper'
+        elif s in ['OPS-AM', 'OPS-PM', 'OPS', 'OPS DISPATCH', 'OPS CLOSEOUT']:
+            return 'OPS'
+        elif s in ['ON-CALL', 'ON CALL', 'STANDBY']:
+            return 'OnCall'
+        elif s in ['RQST OFF', 'REQUEST OFF', 'PTO', 'RQSTOFF']:
+            return 'RqstOff'
+        return ''
 
-    df_display = df_display[display_cols]
+    for d in days_order:
+        df[d] = df[d].apply(clean_shift)
 
-    st.caption(
-        "Assign shift options. Long-range requests are auto-populated as 'Rqst"
-        " Off' with notes pulled from your calendar."
-    )
+    df = df.sort_values(by=['First Name', 'Last Name'], ascending=[True, True]).reset_index(drop=True)
 
-    shift_options = [
-        "Driver",
-        "Helper",
-        "On-Call",
-        "Off",
-        "OPS-AM",
-        "OPS-PM",
-        "Rqst Off",
+    header_str = f"{'Last Name':<12} | {'First Name':<10} | {'Sun':<7} | {'Mon':<7} | {'Tue':<7} | {'Wed':<7} | {'Thu':<7} | {'Fri':<7} | {'Sat':<7}"
+    divider = "-" * len(header_str)
+
+    lines = [
+        f"**📅 WEEKLY DISPATCH SCHEDULE ({week_str.upper()})**",
+        "```text",
+        header_str,
+        divider
     ]
 
-    sch_config = {
-        "Driver Name": st.column_config.TextColumn(
-            "Driver Name", disabled=True
-        ),
-        "Total Days": st.column_config.NumberColumn(
-            "Total Days", disabled=True, format="%d days"
-        ),
-        "Notes / Requests": st.column_config.TextColumn(
-            "Notes / Requests",
-            help="Synced automatically from Long-Range Calendar.",
-        ),
-    }
-    for dh in day_headers:
-      sch_config[dh] = st.column_config.SelectboxColumn(
-          dh, options=shift_options, required=True
-      )
+    for idx, row in df.iterrows():
+        last_n = str(row['Last Name'])[:12]
+        first_n = str(row['First Name'])[:10]
+        
+        sun_v = str(row['Sun'])[:7]
+        mon_v = str(row['Mon'])[:7]
+        tue_v = str(row['Tue'])[:7]
+        wed_v = str(row['Wed'])[:7]
+        thu_v = str(row['Thu'])[:7]
+        fri_v = str(row['Fri'])[:7]
+        sat_v = str(row['Sat'])[:7]
 
-    # Render data editor expanded to fill container width with calculated height for maximum workspace visibility
-    editor_height = min(max(350, len(df_display) * 38 + 50), 750)
-    st.data_editor(
-        df_display,
-        column_config=sch_config,
-        use_container_width=True,
-        num_rows="dynamic",
-        hide_index=True,
-        height=editor_height,
-        key="weekly_schedule_editor_state",
-        on_change=on_schedule_change,
-    )
+        row_str = f"{last_n:<12} | {first_n:<10} | {sun_v:<7} | {mon_v:<7} | {tue_v:<7} | {wed_v:<7} | {thu_v:<7} | {fri_v:<7} | {sat_v:<7}"
+        lines.append(row_str)
 
-    c_s1, c_s2 = st.columns(2)
-    with c_s1:
-      if st.button("💾 Save Weekly Schedule to Disk", type="primary"):
-        safe_save_dataframe(
-            st.session_state["schedule_df"], WEEKLY_SCHEDULE_PATH
-        )
-        log_dispatch_action(
-            f"Saved weekly schedule ({week_label}).", username=active_user
-        )
-        st.success("Weekly schedule saved permanently!")
+    lines.append("```")
+    return "\n".join(lines)
 
-    st.markdown("---")
+def generate_discord_top_drivers(top_drivers_df, week_str="2026-W41", min_pkg_threshold=100):
+    """
+    Generates Discord Top Driver Announcements filtering out nursery / ultra-low volume routes 
+    to ensure bonus recognition goes to full-volume DAs.
+    """
+    if top_drivers_df is None or top_drivers_df.empty:
+        return "No scorecard metrics available."
+
+    md = f"🏆 **TOP DRIVER RECOGNITION - WEEK {week_str.upper()}** 🏆\n"
+    md += "Congratulations to our top performing Delivery Associates of the week! Thank you for your dedication to safety and delivery excellence!\n\n"
+
+    medals = ["🥇 **1ST PLACE**", "🥈 **2ND PLACE**", "🥉 **3RD PLACE**", "⭐ **TOP PERFORMER**", "⭐ **TOP PERFORMER**"]
+
+    score_col = 'Unified_Composite_Score' if 'Unified_Composite_Score' in top_drivers_df.columns else 'Overall Score'
     
-    # ==========================================
-    # DISCORD ANNOUNCEMENT (BUTTON ONLY)
-    # ==========================================
-    st.subheader("📢 Discord Announcement Broadcast (#weekly-schedule)")
-    discord_text = generate_discord_schedule(
-        st.session_state["schedule_df"], week_str=week_label
-    )
+    filtered_df = top_drivers_df[top_drivers_df['Packages Delivered'] >= min_pkg_threshold].copy() if 'Packages Delivered' in top_drivers_df.columns else top_drivers_df.copy()
+    sorted_top = filtered_df.sort_values(by=[score_col, 'Packages Delivered'], ascending=[False, False]).reset_index(drop=True)
 
-    with st.expander("🚀 Post Schedule Directly to Discord Channel", expanded=True):
-      webhook_input = st.text_input(
-          "Discord Webhook URL",
-          value=DISCORD_WEBHOOK_URL,
-          type="password",
-          key="disc_webhook_weekly",
-      )
-      if st.button(
-          "Broadcast Schedule to Discord Channel",
-          type="primary",
-          key="btn_disc_weekly",
-      ):
-        if webhook_input.strip():
-          success, msg = send_discord_webhook(
-              webhook_input.strip(), discord_text
-          )
-          if success:
-            log_dispatch_action(
-                f"Broadcast weekly schedule to Discord ({week_label}).",
-                username=active_user,
-            )
-            st.success(msg)
-          else:
-            st.error(msg)
+    for idx, row in sorted_top.head(5).iterrows():
+        medal = medals[idx] if idx < len(medals) else "⭐ **TOP PERFORMER**"
+        d_name = row['Driver Name']
+        score = row[score_col]
+        standing = row.get('Overall Standing', 'Platinum')
+        fico = row.get('FICO', '850')
+        pkgs = row.get('Packages Delivered', '0')
+
+        md += f"{medal}: **{d_name}**\n"
+        md += f"   • DQI Score: `{score}` | Standing: `{standing}` | FICO: `{fico}` | Packages: `{pkgs}`\n\n"
+
+    md += "Keep up the fantastic work team! 🚛💨"
+    return md
+
+def calculate_driver_attendance_metrics(schedule_df, attendance_log_df):
+    """
+    Cross-references scheduled shift counts against logged infractions in attendance_log.xlsx.
+    Calculates Attendance Rate %, Call-Outs, Late Starts, No-Shows, and Unexcused Absences per DA.
+    """
+    if schedule_df is None or schedule_df.empty:
+        return pd.DataFrame(columns=["Driver Name", "Scheduled Shifts", "Late Starts", "Call-Outs", "No-Shows", "Incomplete Shifts", "Total Infractions", "Reliability Rating"])
+
+    records = []
+    
+    # Pre-aggregate infractions per driver from attendance_log.xlsx
+    infractions_by_driver = {}
+    if attendance_log_df is not None and not attendance_log_df.empty:
+        for _, row in attendance_log_df.iterrows():
+            d = str(row.get('Driver Name', '')).strip()
+            itype = str(row.get('Infraction Type', '')).strip().upper()
+            if d:
+                if d not in infractions_by_driver:
+                    infractions_by_driver[d] = {"LATE": 0, "CALLOUT": 0, "NOSHOW": 0, "INCOMPLETE": 0}
+                
+                if "LATE" in itype:
+                    infractions_by_driver[d]["LATE"] += 1
+                elif "CALL-OUT" in itype or "CALLOUT" in itype:
+                    infractions_by_driver[d]["CALLOUT"] += 1
+                elif "NO-SHOW" in itype or "NOSHOW" in itype:
+                    infractions_by_driver[d]["NOSHOW"] += 1
+                elif "INCOMPLETE" in itype or "LEFT EARLY" in itype:
+                    infractions_by_driver[d]["INCOMPLETE"] += 1
+
+    for idx, row in schedule_df.iterrows():
+        d_name = str(row.get('Driver Name', '')).strip()
+        if not d_name:
+            continue
+
+        scheduled_cnt = 0
+        days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+        for d in days:
+            shift_val = str(row.get(d, '')).strip().upper()
+            if shift_val in ['DRIVER', 'HELPER', 'OPS-AM', 'OPS-PM', 'OPS', 'ON-CALL', 'STANDBY']:
+                scheduled_cnt += 1
+
+        d_counts = infractions_by_driver.get(d_name, {"LATE": 0, "CALLOUT": 0, "NOSHOW": 0, "INCOMPLETE": 0})
+        total_inf = d_counts["LATE"] + d_counts["CALLOUT"] + d_counts["NOSHOW"] + d_counts["INCOMPLETE"]
+
+        if total_inf == 0:
+            rating = "⭐⭐⭐⭐⭐ Excellent"
+        elif total_inf <= 2:
+            rating = "⭐⭐⭐⭐ Good"
+        elif total_inf <= 4:
+            rating = "⚠️ Needs Improvement"
         else:
-          st.warning("Please provide a valid Discord Webhook URL.")
+            rating = "🚨 Critical Action Required"
 
-  # ==========================================
-  # TAB 2: LONG-RANGE PTO & AVAILABILITY CALENDAR
-  # ==========================================
-  with tab_pto:
-    st.markdown("### 🌴 Long-Range Driver PTO & Requests Tracker")
-    st.caption(
-        "Log upcoming driver time-off, doctor appointments, or availability"
-        " blocks well in advance to prevent weekly scheduling errors."
-    )
+        records.append({
+            "Driver Name": d_name,
+            "Scheduled Shifts": scheduled_cnt,
+            "Late Starts": d_counts["LATE"],
+            "Call-Outs": d_counts["CALLOUT"],
+            "No-Shows": d_counts["NOSHOW"],
+            "Incomplete Shifts": d_counts["INCOMPLETE"],
+            "Total Infractions": total_inf,
+            "Reliability Rating": rating
+        })
 
-    with st.form("pto_entry_form", clear_on_submit=True):
-      st.markdown("#### Log New Request")
-      f_col1, f_col2, f_col3, f_col4 = st.columns(4)
-
-      driver_names = []
-      if drivers_df is not None and "Driver Name" in drivers_df.columns:
-        driver_names = sorted(
-            drivers_df["Driver Name"].dropna().unique().tolist()
-        )
-      elif (
-          "schedule_df" in st.session_state
-          and not st.session_state["schedule_df"].empty
-      ):
-        sch_ref = st.session_state["schedule_df"]
-        if "Driver Name" in sch_ref.columns:
-          driver_names = sorted(sch_ref["Driver Name"].unique().tolist())
-        elif "First Name" in sch_ref.columns and "Last Name" in sch_ref.columns:
-          driver_names = sorted(
-              (sch_ref["First Name"] + " " + sch_ref["Last Name"])
-              .unique()
-              .tolist()
-          )
-      else:
-        driver_names = ["Manual Entry Required"]
-
-      with f_col1:
-        sel_driver = st.selectbox("Driver Name", options=driver_names)
-      with f_col2:
-        start_p_date = st.date_input(
-            "Start Date", value=datetime.today(), key="pto_start_input"
-        )
-      with f_col3:
-        end_p_date = st.date_input(
-            "End Date", value=datetime.today(), key="pto_end_input"
-        )
-      with f_col4:
-        category = st.selectbox(
-            "Category",
-            options=[
-                "Approved PTO",
-                "Unpaid Leave",
-                "Appointment / Partial Off",
-                "No Sundays",
-                "Other Constraint",
-            ],
-        )
-
-      reason_notes = st.text_input(
-          "Reason / Notes (e.g., Family vacation, Doctor visit)"
-      )
-
-      submitted_pto = st.form_submit_button(
-          "➕ Add to Long-Range Calendar", type="primary"
-      )
-      if submitted_pto:
-        new_row = {
-            "Driver Name": str(sel_driver).strip(),
-            "Start Date": start_p_date.strftime("%Y-%m-%d"),
-            "End Date": end_p_date.strftime("%Y-%m-%d"),
-            "Category": str(category),
-            "Reason / Notes": str(reason_notes),
-        }
-        st.session_state["pto_df"] = pd.concat(
-            [st.session_state["pto_df"], pd.DataFrame([new_row])],
-            ignore_index=True,
-        )
-
-        for col in st.session_state["pto_df"].columns:
-          st.session_state["pto_df"][col] = (
-              st.session_state["pto_df"][col].astype(str).replace("nan", "")
-          )
-
-        os.makedirs(os.path.dirname(LONG_RANGE_PTO_PATH), exist_ok=True)
-        st.session_state["pto_df"].to_csv(LONG_RANGE_PTO_PATH, index=False)
-
-        if "schedule_df" in st.session_state:
-          del st.session_state["schedule_df"]
-        if "loaded_week_num" in st.session_state:
-          del st.session_state["loaded_week_num"]
-
-        log_dispatch_action(
-            f"Added long-range PTO request for {sel_driver} ({start_p_date} to"
-            f" {end_p_date}).",
-            username=active_user,
-        )
-        st.success(
-            f"Successfully recorded PTO request for {sel_driver}! Weekly"
-            " schedule view updated."
-        )
-
-    st.markdown("---")
-    st.markdown("### 📋 Active Requests Log")
-
-    def on_pto_change():
-      changes = st.session_state.get("pto_editor_state")
-      if changes and "pto_df" in st.session_state:
-        for row_idx, col_changes in changes.get("edited_rows", {}).items():
-          for col_name, new_val in col_changes.items():
-            st.session_state["pto_df"].at[row_idx, col_name] = str(new_val)
-
-    pto_config = {
-        "Driver Name": st.column_config.TextColumn("Driver Name"),
-        "Start Date": st.column_config.TextColumn("Start Date"),
-        "End Date": st.column_config.TextColumn("End Date"),
-        "Category": st.column_config.SelectboxColumn(
-            "Category",
-            options=[
-                "Approved PTO",
-                "Unpaid Leave",
-                "Appointment / Partial Off",
-                "No Sundays",
-                "Other Constraint",
-            ],
-            required=True,
-        ),
-        "Reason / Notes": st.column_config.TextColumn("Reason / Notes"),
-    }
-
-    edited_pto_df = st.data_editor(
-        st.session_state["pto_df"],
-        column_config=pto_config,
-        use_container_width=True,
-        num_rows="dynamic",
-        hide_index=True,
-        key="pto_editor_state",
-        on_change=on_pto_change,
-    )
-
-    c_p1, c_p2 = st.columns(2)
-    with c_p1:
-      if st.button(
-          "💾 Save Long-Range Calendar to Disk",
-          type="primary",
-          key="save_pto_disk",
-      ):
-        for col in edited_pto_df.columns:
-          edited_pto_df[col] = (
-              edited_pto_df[col].astype(str).replace("nan", "")
-          )
-
-        os.makedirs(os.path.dirname(LONG_RANGE_PTO_PATH), exist_ok=True)
-        edited_pto_df.to_csv(LONG_RANGE_PTO_PATH, index=False)
-        st.session_state["pto_df"] = edited_pto_df.copy()
-
-        if "schedule_df" in st.session_state:
-          del st.session_state["schedule_df"]
-        if "loaded_week_num" in st.session_state:
-          del st.session_state["loaded_week_num"]
-
-        log_dispatch_action(
-            "Updated long-range PTO calendar database.", username=active_user
-        )
-        st.success(
-            "Long-range calendar saved and weekly schedule synchronized!"
-        )
+    return pd.DataFrame(records).sort_values(by=['Total Infractions', 'Driver Name'], ascending=[False, True]).reset_index(drop=True)
