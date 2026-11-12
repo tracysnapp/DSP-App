@@ -10,7 +10,7 @@ from engine import (
     log_dispatch_action,
     safe_save_dataframe,
 )
-from modules.schedule import generate_discord_schedule, send_discord_webhook
+from modules.schedule import generate_discord_schedule, send_discord_webhook, auto_generate_pattern_weekly_schedule
 
 LONG_RANGE_PTO_PATH = "data/long_range_pto.csv"
 WEEKLY_TARGETS_PATH = "data/weekly_targets.json"
@@ -400,7 +400,7 @@ def render_scheduler_tab():
     st.markdown("---")
 
     # ==========================================
-    # D: CONSOLIDATED CONFLICT ALERT BANNER
+    # CONFLICT ALERT BANNER
     # ==========================================
     conflict_count = 0
     conflict_details = []
@@ -409,25 +409,23 @@ def render_scheduler_tab():
       for _, r_item in sch_check.iterrows():
         notes_str = str(r_item.get("Notes / Requests", ""))
         if notes_str and notes_str != "nan":
-          # Check if any scheduled work shift overlaps with an approved PTO/constraint note
           d_name = r_item.get("Driver Name", "Driver")
           for dh in day_headers:
             shift_val = str(r_item.get(dh, "")).strip()
             if shift_val in work_shifts:
-              # If working on a day that has a constraint note
               conflict_count += 1
               conflict_details.append(f"• **{d_name}** scheduled on **{dh}** despite active calendar constraint: *{notes_str[:60]}...*")
 
     if conflict_count > 0:
       with st.expander(f"⚠️ **Schedule Conflict Alert: {conflict_count} potential overlap(s) detected with calendar constraints**", expanded=True):
         st.warning("Review the drivers scheduled below who have active long-range PTO or availability notes for the week:")
-        for cd in conflict_details[:5]:  # Show top 5
+        for cd in conflict_details[:5]:
           st.markdown(cd)
         if len(conflict_details) > 5:
           st.caption(f"...and {len(conflict_details) - 5} more conflicts.")
-    
+
     # ==========================================
-    # C: ROLE & AVAILABILITY FILTER TOGGLES
+    # ROLE & AVAILABILITY FILTER TOGGLES
     # ==========================================
     f_col1, f_col2 = st.columns([2, 2])
     with f_col1:
@@ -447,6 +445,26 @@ def render_scheduler_tab():
           options=["None (Show All Days)"] + day_headers,
           key="sched_day_focus_sel"
       )
+
+    # ==========================================
+    # AUTO-SCHEDULER (PATTERN & 4-SHIFT TARGET)
+    # ==========================================
+    with st.expander("🤖 Advanced Auto-Scheduler (Driver Preferences & 4 Shifts)", expanded=False):
+      st.caption("Automatically distribute shifts targeting 4 days per week respecting each driver's assigned shift pattern from their profile.")
+      
+      if st.button("🚀 Run Pattern-Aware Auto-Scheduler", type="primary", key="btn_run_pattern_auto"):
+        updated_sch = auto_generate_pattern_weekly_schedule(
+            st.session_state["schedule_df"],
+            day_headers,
+            expected_routes_dict,
+            drivers_df=drivers_df,
+            target_shifts_per_driver=4
+        )
+
+        st.session_state["schedule_df"] = updated_sch.copy()
+        log_dispatch_action(f"Ran pattern-aware auto-scheduler for Amazon Week {sel_amazon_week}.", username=active_user)
+        st.success("Successfully auto-generated weekly schedule matching driver patterns and volume targets!")
+        st.rerun()
 
     # ==========================================
     # BULK MULTI-DRIVER SHIFT ASSIGNMENT TOOL
@@ -497,7 +515,6 @@ def render_scheduler_tab():
         work_shifts
     ).sum(axis=1)
 
-    # Apply C filters
     if schedule_view_filter == "Show Scheduled Only (Drivers/Helpers/OPS)":
       df_display = df_display[df_display["Total Days"] > 0]
     elif schedule_view_filter == "Show Available / Unscheduled Only":
@@ -507,7 +524,6 @@ def render_scheduler_tab():
 
     display_cols = ["Driver Name"] + existing_day_cols
     if day_quick_focus != "None (Show All Days)" and day_quick_focus in existing_day_cols:
-      # Focus view: Put Driver Name, Notes, and the selected day first/prominent
       display_cols = ["Driver Name", day_quick_focus] + [c for c in existing_day_cols if c != day_quick_focus]
 
     if "Total Days" in df_display.columns:
