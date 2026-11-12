@@ -18,8 +18,6 @@ def get_amazon_week_1_start(year: int) -> datetime:
   """Returns the Sunday start date of Amazon Week 1 for a given operating year.
   
   Amazon Operating Years start on the Sunday of the week containing Jan 1st/4th.
-  - 2026 Week 1: Sun, Dec 28, 2025 (making Nov 8 - Nov 14, 2026 = Week 46, and Dec 27 - Jan 2 = Week 53)
-  - 2027 Week 1: Sun, Jan 03, 2027
   """
   if year == 2027:
     return datetime(2027, 1, 3)
@@ -170,11 +168,11 @@ def render_scheduler_tab():
       pto_data = st.session_state["pto_df"]
 
       if loaded_sch.empty and drivers_df is not None and not drivers_df.empty:
-        active_drivers = (
-            drivers_df[drivers_df["Status"] == "ACTIVE"]
-            if "Status" in drivers_df.columns
-            else drivers_df
-        )
+        # Filter strictly for ACTIVE drivers only
+        active_drivers = drivers_df[
+            drivers_df["Status"].astype(str).str.strip().str.upper() == "ACTIVE"
+        ].copy() if "Status" in drivers_df.columns else drivers_df.copy()
+        
         init_sch = []
 
         for _, row in active_drivers.iterrows():
@@ -201,6 +199,17 @@ def render_scheduler_tab():
         sch_df = pd.DataFrame(init_sch)
       else:
         sch_df = loaded_sch.copy()
+        
+        # Also clean loaded schedule against active driver directory if available
+        if drivers_df is not None and not drivers_df.empty and "Status" in drivers_df.columns:
+          active_names = set(
+              drivers_df[drivers_df["Status"].astype(str).str.strip().str.upper() == "ACTIVE"]["Driver Name"]
+              .dropna().astype(str).str.strip().str.lower()
+          )
+          if active_names:
+            sch_df["__dn_lower"] = sch_df["Driver Name"].astype(str).str.strip().str.lower()
+            sch_df = sch_df[sch_df["__dn_lower"].isin(active_names)].drop(columns=["__dn_lower"]).reset_index(drop=True)
+
         for d_key, d_header in day_key_to_header.items():
           if d_key in sch_df.columns and d_header not in sch_df.columns:
             sch_df.rename(columns={d_key: d_header}, inplace=True)
@@ -342,6 +351,53 @@ def render_scheduler_tab():
       delta = driver_count - day_target
       metrics_cols[i].metric(label=d_header, value=driver_count, delta=delta)
 
+    st.markdown("---")
+    
+    # ==========================================
+    # BULK MULTI-DRIVER SHIFT ASSIGNMENT TOOL
+    # ==========================================
+    with st.expander("⚡ Bulk Assign Shifts to Multiple Drivers", expanded=False):
+      st.caption("Select multiple drivers below, pick the target day(s) and shift type, then click apply.")
+      
+      all_schedule_drivers = (
+          st.session_state["schedule_df"]["Driver Name"].dropna().unique().tolist()
+          if "schedule_df" in st.session_state and not st.session_state["schedule_df"].empty
+          else []
+      )
+      
+      bulk_sel_drivers = st.multiselect("Select Drivers", options=all_schedule_drivers, key="bulk_drivers_sel")
+      
+      b_col1, b_col2 = st.columns(2)
+      with b_col1:
+        bulk_sel_days = st.multiselect("Select Days", options=day_headers, default=day_headers, key="bulk_days_sel")
+      with b_col2:
+        bulk_sel_shift = st.selectbox(
+            "Assign Shift Type",
+            options=["Driver", "Helper", "On-Call", "Off", "OPS-AM", "OPS-PM", "Rqst Off"],
+            key="bulk_shift_sel"
+        )
+        
+      if st.button("🚀 Apply Bulk Shift Assignment", type="primary", key="btn_apply_bulk"):
+        if not bulk_sel_drivers:
+          st.warning("Please select at least one driver.")
+        elif not bulk_sel_days:
+          st.warning("Please select at least one day.")
+        else:
+          sch_df_ref = st.session_state["schedule_df"]
+          updated_count = 0
+          for idx, row in sch_df_ref.iterrows():
+            d_name = str(row.get("Driver Name", "")).strip()
+            if d_name in bulk_sel_drivers:
+              for d_day in bulk_sel_days:
+                if d_day in sch_df_ref.columns:
+                  sch_df_ref.at[idx, d_day] = bulk_sel_shift
+                  updated_count += 1
+          
+          st.session_state["schedule_df"] = sch_df_ref.copy()
+          log_dispatch_action(f"Bulk assigned shift '{bulk_sel_shift}' for {len(bulk_sel_drivers)} drivers across {len(bulk_sel_days)} days.", username=active_user)
+          st.success(f"Successfully updated shifts for {len(bulk_sel_drivers)} drivers!")
+          st.rerun()
+
     df_display = st.session_state["schedule_df"].copy()
     existing_day_cols = [c for c in day_headers if c in df_display.columns]
     df_display["Total Days"] = df_display[existing_day_cols].isin(
@@ -388,12 +444,15 @@ def render_scheduler_tab():
           dh, options=shift_options, required=True
       )
 
+    # Render data editor expanded to fill container width with calculated height for maximum workspace visibility
+    editor_height = min(max(350, len(df_display) * 38 + 50), 750)
     st.data_editor(
         df_display,
         column_config=sch_config,
         use_container_width=True,
         num_rows="dynamic",
         hide_index=True,
+        height=editor_height,
         key="weekly_schedule_editor_state",
         on_change=on_schedule_change,
     )
@@ -410,13 +469,16 @@ def render_scheduler_tab():
         st.success("Weekly schedule saved permanently!")
 
     st.markdown("---")
-    st.subheader("📢 Discord Announcement Generator (#weekly-schedule)")
+    
+    # ==========================================
+    # DISCORD ANNOUNCEMENT (BUTTON ONLY)
+    # ==========================================
+    st.subheader("📢 Discord Announcement Broadcast (#weekly-schedule)")
     discord_text = generate_discord_schedule(
         st.session_state["schedule_df"], week_str=week_label
     )
-    st.code(discord_text, language="markdown")
 
-    with st.expander("🚀 Post Schedule Directly to Discord Channel"):
+    with st.expander("🚀 Post Schedule Directly to Discord Channel", expanded=True):
       webhook_input = st.text_input(
           "Discord Webhook URL",
           value=DISCORD_WEBHOOK_URL,
