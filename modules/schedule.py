@@ -15,6 +15,52 @@ def _find_day_column(columns, day_prefix):
   )
 
 
+def apply_standing_schedules_to_df(
+    schedule_df, day_headers, standing_rules_dict, overwrite_existing=False
+):
+  """
+    Applies standing / recurring fixed-day schedule rules to `schedule_df`.
+    Never overwrites 'Rqst Off' (Long-Range PTO takes precedence).
+    """
+  if (
+      schedule_df is None
+      or schedule_df.empty
+      or not standing_rules_dict
+      or "Driver Name" not in schedule_df.columns
+  ):
+    return schedule_df
+
+  df = schedule_df.copy()
+  day_prefix_to_header = {}
+  for d_prefix in ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]:
+    matched = _find_day_column(day_headers, d_prefix)
+    if matched:
+      day_prefix_to_header[d_prefix] = matched
+
+  for idx, row in df.iterrows():
+    dn_lower = str(row.get("Driver Name", "")).strip().lower()
+    rule = standing_rules_dict.get(dn_lower)
+    if not rule:
+      continue
+
+    fixed_days = rule.get("days", [])
+    fixed_shift = str(rule.get("shift", "")).strip()
+    if not fixed_days or not fixed_shift:
+      continue
+
+    for d_prefix in fixed_days:
+      dh = day_prefix_to_header.get(d_prefix)
+      if not dh or dh not in df.columns:
+        continue
+      curr_val = str(df.at[idx, dh]).strip()
+      if curr_val == "Rqst Off":
+        continue
+      if overwrite_existing or curr_val in ["", "None", "nan", "NaN"]:
+        df.at[idx, dh] = fixed_shift
+
+  return df
+
+
 def send_discord_webhook(webhook_url, content_text):
   """Posts plain or markdown-formatted message strings directly to a Discord channel via Webhook."""
   if not webhook_url or not webhook_url.startswith("http"):
@@ -255,11 +301,14 @@ def auto_generate_pattern_weekly_schedule(
     prev_week_schedule_df=None,
     max_consecutive_days=5,
     clear_existing_non_pto=False,
+    standing_rules_dict=None,
 ):
   """
-    Two-pass, role-aware, demand-balanced auto-scheduler:
-    - Pass 1: Ensures every available team member receives at least `min_shifts_per_driver` (2 shifts/week)
-      in scorecard-rank order so lower-ranked drivers aren't shut out.
+    Two-pass, role-aware, demand-balanced auto-scheduler with Standing Schedule Locks:
+    - Step 0: Applies Standing / Fixed Weekly Schedule rules first (and locks anyone with
+      `lock_only_fixed_days=True` so they are never scheduled outside their fixed days).
+    - Pass 1: Ensures every remaining available team member receives at least `min_shifts_per_driver`
+      (2 shifts/week) in scorecard-rank order so lower-ranked drivers aren't shut out.
     - Pass 2: Tops up drivers in scorecard-rank order up to `target_shifts_per_driver` (4 shifts/week)
       within daily +15% buffered targets.
     """
@@ -276,6 +325,21 @@ def auto_generate_pattern_weekly_schedule(
         val = str(row.get(dh, "")).strip()
         if val not in protected_statuses:
           df.at[idx, dh] = ""
+
+  # Step 0: Apply standing / recurring fixed schedules before auto-filling
+  if standing_rules_dict:
+    df = apply_standing_schedules_to_df(
+        df,
+        day_headers,
+        standing_rules_dict,
+        overwrite_existing=clear_existing_non_pto,
+    )
+
+  locked_fixed_drivers = set()
+  if standing_rules_dict:
+    for dn_key, rule_cfg in standing_rules_dict.items():
+      if rule_cfg.get("lock_only_fixed_days", True):
+        locked_fixed_drivers.add(dn_key.strip().lower())
 
   pref_map = {}
   score_map = {}
@@ -352,6 +416,11 @@ def auto_generate_pattern_weekly_schedule(
   def _assign_shifts_up_to_cap(shift_cap, allow_overflow_for_minimum=False):
     for idx, row in df.iterrows():
       d_name = str(row.get("Driver Name", "")).strip().lower()
+
+      # Skip drivers whose standing schedule locks them strictly to their fixed days
+      if d_name in locked_fixed_drivers:
+        continue
+
       current_shifts = sum(
           1
           for dh in day_headers
@@ -365,7 +434,6 @@ def auto_generate_pattern_weekly_schedule(
       trailing_streak = trailing_streaks[idx]
 
       if "Front" in driver_pref:
-        # Preferred front-half days first, then remaining active days if needed to meet minimum
         fallback_days = sorted(
             [i for i in range(len(day_headers)) if i not in front_half_indices],
             key=lambda i: (
@@ -443,7 +511,7 @@ def auto_generate_pattern_weekly_schedule(
         df.at[idx, dh] = shift_label
         current_shifts += 1
 
-  # Pass 1: Guarantee minimum 2 shifts/week across all drivers in priority order
+  # Pass 1: Guarantee minimum 2 shifts/week across all non-locked drivers in priority order
   _assign_shifts_up_to_cap(
       min_shifts_per_driver, allow_overflow_for_minimum=True
   )
