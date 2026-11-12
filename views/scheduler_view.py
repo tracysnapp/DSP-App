@@ -5,13 +5,16 @@ from engine import (
     DISCORD_WEBHOOK_URL,
     load_local_schedule,
     load_long_range_pto_storage,
+    load_standing_schedules_storage,
     load_weekly_targets_storage,
     log_dispatch_action,
     save_long_range_pto_storage,
+    save_standing_schedules_storage,
     save_weekly_schedule_to_storage,
     save_weekly_targets_storage,
 )
 from modules.schedule import (
+    apply_standing_schedules_to_df,
     auto_generate_pattern_weekly_schedule,
     generate_discord_schedule,
     send_discord_webhook,
@@ -112,6 +115,11 @@ def render_scheduler_tab():
 
   if "weekly_targets_dict" not in st.session_state:
     st.session_state["weekly_targets_dict"] = load_weekly_targets_storage()
+
+  if "standing_schedules_dict" not in st.session_state:
+    st.session_state["standing_schedules_dict"] = (
+        load_standing_schedules_storage()
+    )
 
   # ==========================================
   # TAB 1: WEEKLY SHIFT SCHEDULER (AMAZON WEEKS 1-53)
@@ -389,6 +397,13 @@ def render_scheduler_tab():
                   else combined
               )
 
+      # Apply Standing / Fixed Weekly Schedules to blank cells (respecting Rqst Off)
+      standing_rules = st.session_state.get("standing_schedules_dict", {})
+      if standing_rules and not sch_df.empty:
+        sch_df = apply_standing_schedules_to_df(
+            sch_df, day_headers, standing_rules, overwrite_existing=False
+        )
+
       ordered_cols = ["Driver Name"] + day_headers + ["Notes / Requests"]
       for c in ["First Name", "Last Name"]:
         if c in sch_df.columns and c not in ordered_cols:
@@ -542,6 +557,7 @@ def render_scheduler_tab():
               "Show All Active Drivers",
               "Show Scheduled Only (Drivers/Helpers/OPS)",
               "Show Available / Unscheduled Only",
+              "Show Fixed / Standing Schedule Only",
               "Show Over 4 Shifts (OT Risk)",
               "Show with Calendar Notes / Requests",
           ],
@@ -555,23 +571,173 @@ def render_scheduler_tab():
       )
 
     # ==========================================
-    # AUTO-SCHEDULER (ROLE-AWARE, BALANCED DEMAND & 15% BUFFER)
+    # STANDING / RECURRING FIXED WEEKLY SCHEDULES
     # ==========================================
+    standing_rules = st.session_state.get("standing_schedules_dict", {})
     with st.expander(
-        "🤖 Advanced Auto-Scheduler (+15% Sweeper Buffer, Role-Aware &"
-        " Cross-Week Fatigue Guard)",
+        f"📌 Standing / Fixed Weekly Schedules ({len(standing_rules)} Active"
+        " Rules — Force-Schedule OPS, Dispatchers & Part-Time DAs)",
         expanded=False,
     ):
       st.caption(
-          "Distributes up to 4 shifts/week using scorecard priority, directory"
-          " roles (OPS-AM/PM, Sweeper/Helper, Driver), shift preferences,"
-          " balanced daily demand, and a 5-consecutive-day cap across weeks."
+          "Lock team members (e.g., OPS Manager, Dispatchers, or part-time"
+          " Tue/Wed drivers) to fixed days every week. Standing rules"
+          " auto-populate every week and are protected during auto-scheduling."
+      )
+
+      all_schedule_drivers_standing = (
+          st.session_state["schedule_df"]["Driver Name"]
+          .dropna()
+          .unique()
+          .tolist()
+          if "schedule_df" in st.session_state
+          and not st.session_state["schedule_df"].empty
+          else []
+      )
+
+      st_c1, st_c2, st_c3 = st.columns([2, 2, 1])
+      with st_c1:
+        fix_driver_sel = st.selectbox(
+            "Select Team Member",
+            options=all_schedule_drivers_standing,
+            key="fix_drv_sel",
+        )
+      with st_c2:
+        fix_days_sel = st.multiselect(
+            "Fixed Days of Week",
+            options=day_keys,
+            default=["Tue", "Wed"],
+            key="fix_days_sel",
+        )
+      with st_c3:
+        fix_shift_sel = st.selectbox(
+            "Fixed Shift",
+            options=[
+                "Driver",
+                "Helper",
+                "OPS-AM",
+                "OPS-PM",
+                "On-Call",
+                "Off",
+            ],
+            index=0,
+            key="fix_shift_sel",
+        )
+
+      fix_lock_strict = st.checkbox(
+          "Lock strictly to ONLY these fixed days (do NOT auto-assign extra"
+          " days — recommended for part-time 2-day DAs & fixed OPS/Dispatch)",
+          value=True,
+          key="fix_lock_strict_chk",
+      )
+
+      btn_f1, btn_f2 = st.columns([1, 2])
+      with btn_f1:
+        if st.button(
+            "💾 Save & Apply Standing Rule",
+            type="primary",
+            key="btn_save_standing_rule",
+        ):
+          if not fix_driver_sel:
+            st.warning("Select a team member first.")
+          elif not fix_days_sel:
+            st.warning("Select at least one day of the week.")
+          else:
+            dn_key = str(fix_driver_sel).strip().lower()
+            st.session_state["standing_schedules_dict"][dn_key] = {
+                "driver_name": str(fix_driver_sel).strip(),
+                "days": list(fix_days_sel),
+                "shift": str(fix_shift_sel).strip(),
+                "lock_only_fixed_days": bool(fix_lock_strict),
+            }
+            save_standing_schedules_storage(
+                st.session_state["standing_schedules_dict"]
+            )
+
+            # Immediately apply to the active week's grid
+            st.session_state["schedule_df"] = apply_standing_schedules_to_df(
+                st.session_state["schedule_df"],
+                day_headers,
+                st.session_state["standing_schedules_dict"],
+                overwrite_existing=True,
+            )
+            log_dispatch_action(
+                f"Saved standing schedule rule for {fix_driver_sel}:"
+                f" {', '.join(fix_days_sel)} as {fix_shift_sel}.",
+                username=active_user,
+            )
+            st.success(
+                f"Saved standing schedule for {fix_driver_sel} and applied to"
+                f" {week_label}!"
+            )
+            st.rerun()
+
+      if standing_rules:
+        st.markdown("#### Active Standing Rules")
+        rules_rows = []
+        for dn_key, r_cfg in standing_rules.items():
+          rules_rows.append({
+              "Team Member": r_cfg.get("driver_name", dn_key),
+              "Fixed Days": ", ".join(r_cfg.get("days", [])),
+              "Assigned Shift": r_cfg.get("shift", ""),
+              "Strict Lock (No Extra Auto-Days)": (
+                  "Yes (Fixed Only)"
+                  if r_cfg.get("lock_only_fixed_days", True)
+                  else "No (Can Top-Up)"
+              ),
+          })
+        st.dataframe(
+            pd.DataFrame(rules_rows), use_container_width=True, hide_index=True
+        )
+
+        del_c1, del_c2 = st.columns([2, 1])
+        with del_c1:
+          rule_to_remove = st.selectbox(
+              "Remove Standing Rule",
+              options=["Select to remove..."]
+              + [
+                  r_cfg.get("driver_name", k)
+                  for k, r_cfg in standing_rules.items()
+              ],
+              key="del_standing_rule_sel",
+          )
+        with del_c2:
+          st.markdown("<br>", unsafe_allow_html=True)
+          if (
+              rule_to_remove != "Select to remove..."
+              and st.button("🗑️ Delete Rule", key="btn_del_standing_rule")
+          ):
+            rem_key = str(rule_to_remove).strip().lower()
+            if rem_key in st.session_state["standing_schedules_dict"]:
+              del st.session_state["standing_schedules_dict"][rem_key]
+              save_standing_schedules_storage(
+                  st.session_state["standing_schedules_dict"]
+              )
+              log_dispatch_action(
+                  f"Deleted standing schedule rule for {rule_to_remove}.",
+                  username=active_user,
+              )
+              st.success(f"Removed standing rule for {rule_to_remove}.")
+              st.rerun()
+
+    # ==========================================
+    # AUTO-SCHEDULER (TWO-PASS MINIMUM 2 SHIFTS, ROLE-AWARE & STANDING LOCKS)
+    # ==========================================
+    with st.expander(
+        "🤖 Advanced Auto-Scheduler (Min 2 Shifts Guarantee, Standing Locks &"
+        " +15% Buffer)",
+        expanded=False,
+    ):
+      st.caption(
+          "Applies Standing Rules first, guarantees every available team member"
+          " gets at least 2 shifts/week (Pass 1), then tops up top-ranked"
+          " drivers to 4 shifts/week (Pass 2) within the +15% buffered target."
       )
 
       auto_c1, auto_c2, _ = st.columns([1, 1, 2])
       with auto_c1:
         clear_existing_auto = st.checkbox(
-            "Reset non-PTO shifts before generating",
+            "Reset non-PTO/non-standing shifts before generating",
             value=False,
             key="chk_clear_before_auto",
         )
@@ -604,19 +770,23 @@ def render_scheduler_tab():
             expected_routes_dict,
             drivers_df=drivers_df,
             target_shifts_per_driver=4,
+            min_shifts_per_driver=2,
             prev_week_schedule_df=prev_week_df,
             max_consecutive_days=int(max_consec_days),
             clear_existing_non_pto=clear_existing_auto,
+            standing_rules_dict=st.session_state.get(
+                "standing_schedules_dict", {}
+            ),
         )
 
         st.session_state["schedule_df"] = updated_sch.copy()
         log_dispatch_action(
-            f"Ran role-aware buffered auto-scheduler for {week_label}.",
+            f"Ran two-pass auto-scheduler with standing locks for {week_label}.",
             username=active_user,
         )
         st.success(
-            "Successfully auto-generated weekly schedule with role assignments,"
-            " balanced daily demand, and +15% sweeper/helper buffer!"
+            "Successfully generated weekly schedule with standing locks, 2-shift"
+            " minimum guarantee, and +15% buffer!"
         )
         st.rerun()
 
@@ -704,14 +874,34 @@ def render_scheduler_tab():
     df_display["Total Days"] = (
         df_display[existing_day_cols].isin(work_shifts).sum(axis=1)
     )
-    df_display["OT Status"] = df_display["Total Days"].apply(
-        lambda x: f"⚠️ OT ({int(x)*10}h)" if x > 4 else "✅ Reg"
+
+    standing_keys_set = set(
+        st.session_state.get("standing_schedules_dict", {}).keys()
     )
+
+    def _format_row_status(row):
+      dn_low = str(row.get("Driver Name", "")).strip().lower()
+      tot = int(row.get("Total Days", 0))
+      if tot > 4:
+        return f"⚠️ OT ({tot*10}h)"
+      if dn_low in standing_keys_set:
+        return "📌 Fixed"
+      return "✅ Reg"
+
+    df_display["OT Status"] = df_display.apply(_format_row_status, axis=1)
 
     if schedule_view_filter == "Show Scheduled Only (Drivers/Helpers/OPS)":
       df_display = df_display[df_display["Total Days"] > 0]
     elif schedule_view_filter == "Show Available / Unscheduled Only":
       df_display = df_display[df_display["Total Days"] == 0]
+    elif schedule_view_filter == "Show Fixed / Standing Schedule Only":
+      df_display = df_display[
+          df_display["Driver Name"]
+          .astype(str)
+          .str.strip()
+          .str.lower()
+          .isin(standing_keys_set)
+      ]
     elif schedule_view_filter == "Show Over 4 Shifts (OT Risk)":
       df_display = df_display[df_display["Total Days"] > 4]
     elif schedule_view_filter == "Show with Calendar Notes / Requests":
@@ -738,7 +928,7 @@ def render_scheduler_tab():
 
     st.caption(
         "Assign shift options. Leave cells blank if available but not"
-        " scheduled. Long-range requests are auto-populated as 'Rqst Off'."
+        " scheduled. Standing schedules auto-populate with 📌 Fixed status."
     )
 
     shift_options = [
