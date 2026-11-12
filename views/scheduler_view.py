@@ -144,9 +144,9 @@ def render_scheduler_tab():
       st.caption(f"**Cycle Window:** {week_label} *(Sun - Sat Operational)*")
 
     with c_info:
-      st.markdown("### 🎯 Daily Route Targets (Amazon Station Volume)")
+      st.markdown("### 🎯 Daily Route Targets & 15% Sweeper Buffer")
       st.caption(
-          "Adjust expected route counts per day. Changes save automatically."
+          "Adjust expected route counts per day. The auto-scheduler adds a 15% buffer automatically."
       )
 
     day_keys = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
@@ -380,7 +380,7 @@ def render_scheduler_tab():
               clean_val = "" if new_val is None or str(new_val).strip().lower() in ["none", "nan", "nat"] else str(new_val).strip()
               st.session_state["schedule_df"].at[row_idx, col_name] = clean_val
 
-    st.markdown("### 📊 Live Coverage vs. Station Targets")
+    st.markdown("### 📊 Live Coverage vs. Station Targets (with +15% Buffer)")
     metrics_cols = st.columns(7)
 
     work_shifts = ["Driver", "Helper", "OPS-AM", "OPS-PM"]
@@ -393,9 +393,10 @@ def render_scheduler_tab():
         )
       else:
         driver_count = 0
-      day_target = expected_routes_dict.get(d_header, 0)
-      delta = driver_count - day_target
-      metrics_cols[i].metric(label=d_header, value=driver_count, delta=delta)
+      base_target = expected_routes_dict.get(d_header, 0)
+      buffered_target = int((base_target * 1.15) + 0.99)
+      delta = driver_count - buffered_target
+      metrics_cols[i].metric(label=d_header, value=driver_count, delta=delta, delta_color="normal")
 
     st.markdown("---")
 
@@ -447,12 +448,12 @@ def render_scheduler_tab():
       )
 
     # ==========================================
-    # AUTO-SCHEDULER (SCORECARD RANK, PREFERENCES & 4-SHIFT TARGET)
+    # AUTO-SCHEDULER (SCORECARD RANK, PREFERENCES & 15% BUFFER)
     # ==========================================
-    with st.expander("🤖 Advanced Auto-Scheduler (Scorecard Priority, Preferences & 4 Shifts)", expanded=False):
-      st.caption("Automatically distribute shifts targeting 4 days per week prioritizing higher scorecard ranks and respecting driver shift patterns.")
+    with st.expander("🤖 Advanced Auto-Scheduler (+15% Sweeper Buffer, Scorecard Priority & 4 Shifts)", expanded=False):
+      st.caption("Automatically distribute shifts targeting 4 days per week incorporating a +15% headcount buffer for sweepers/helpers, scorecard priority, and driver shift patterns.")
       
-      if st.button("🚀 Run Scorecard-Prioritized Auto-Scheduler", type="primary", key="btn_run_pattern_auto"):
+      if st.button("🚀 Run Buffered Auto-Scheduler", type="primary", key="btn_run_pattern_auto"):
         updated_sch = auto_generate_pattern_weekly_schedule(
             st.session_state["schedule_df"],
             day_headers,
@@ -462,8 +463,8 @@ def render_scheduler_tab():
         )
 
         st.session_state["schedule_df"] = updated_sch.copy()
-        log_dispatch_action(f"Ran scorecard-prioritized auto-scheduler for Amazon Week {sel_amazon_week}.", username=active_user)
-        st.success("Successfully auto-generated weekly schedule prioritizing scorecard ranks and volume targets!")
+        log_dispatch_action(f"Ran buffered auto-scheduler with +15% target for Amazon Week {sel_amazon_week}.", username=active_user)
+        st.success("Successfully auto-generated weekly schedule with +15% sweeper/helper buffer!")
         st.rerun()
 
     # ==========================================
