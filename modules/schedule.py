@@ -133,7 +133,7 @@ def auto_generate_pattern_weekly_schedule(schedule_df, day_headers, expected_rou
     1. Scorecard rank priority (higher score gets scheduled first).
     2. Driver-specific 'Preferred Shifts' (Front Half, Back Half, or Any).
     3. Existing 'Rqst Off' or calendar constraints.
-    4. Daily route volume targets.
+    4. Daily route volume targets + 15% buffer capacity for sweepers/helpers.
     """
     if schedule_df is None or schedule_df.empty:
         return schedule_df
@@ -141,7 +141,6 @@ def auto_generate_pattern_weekly_schedule(schedule_df, day_headers, expected_rou
     df = schedule_df.copy()
     work_shifts = ["Driver", "Helper", "OPS-AM", "OPS-PM"]
 
-    # Extract preferences and scorecard scores from drivers_df
     pref_map = {}
     score_map = {}
     if drivers_df is not None and not drivers_df.empty and "Driver Name" in drivers_df.columns:
@@ -158,7 +157,6 @@ def auto_generate_pattern_weekly_schedule(schedule_df, day_headers, expected_rou
                 except Exception:
                     score_map[d_name] = 100.0
 
-    # Attach score to df temporarily for sorting priority
     df["__temp_score"] = df["Driver Name"].astype(str).str.strip().str.lower().map(score_map).fillna(100.0)
     df = df.sort_values(by="__temp_score", ascending=False).reset_index(drop=True)
 
@@ -191,13 +189,14 @@ def auto_generate_pattern_weekly_schedule(schedule_df, day_headers, expected_rou
                 continue
 
             day_current_count = len(df[df[dh].isin(work_shifts)])
-            day_target = expected_routes_dict.get(dh, 25)
+            base_target = expected_routes_dict.get(dh, 25)
+            # Apply 15% buffer for sweepers/helpers as requested
+            buffered_target = int(pd.np.ceil(base_target * 1.15)) if hasattr(pd, 'np') else int((base_target * 1.15) + 0.99)
 
-            if day_current_count < day_target:
+            if day_current_count < buffered_target:
                 df.at[idx, dh] = "Driver"
                 current_shifts += 1
 
-    # Drop temporary score column and resort alphabetically by name for clean display
     df = df.drop(columns=["__temp_score"], errors="ignore")
     sort_cols = [c for c in ["First Name", "Last Name", "Driver Name"] if c in df.columns]
     if sort_cols:
