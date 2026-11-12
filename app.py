@@ -17,7 +17,6 @@ from engine import (
     load_local_fleet,
     load_local_incidents_log,
     load_local_phones,
-    load_local_schedule,
     load_local_scorecards,
     load_snapshot_file,
     log_dispatch_action,
@@ -25,13 +24,13 @@ from engine import (
     save_daily_closing_checklist,
     save_snapshot_file,
 )
+from views.access_codes import render_access_codes_tab
 from views.closing_checklist import render_closing_checklist_tab
 from views.dispatch_roster import render_dispatch_roster_tab
 from views.driver_directory import render_driver_directory_tab
 from views.fleet_phones_view import render_fleet_tab
 from views.scheduler_view import render_scheduler_tab
 from views.scorecards_view import render_scorecards_tab
-from views.access_codes import render_access_codes_tab
 
 # Page Configuration
 st.set_page_config(
@@ -144,11 +143,6 @@ if (
     or st.session_state["drivers_df"] is None
 ):
   st.session_state["drivers_df"] = load_local_drivers()
-if (
-    "schedule_df" not in st.session_state
-    or st.session_state["schedule_df"] is None
-):
-  st.session_state["schedule_df"] = load_local_schedule()
 if (
     "scorecards_df" not in st.session_state
     or st.session_state["scorecards_df"] is None
