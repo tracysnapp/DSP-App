@@ -15,7 +15,6 @@ import streamlit as st
 def render_driver_directory_tab():
   st.subheader("👥 Master Driver Directory & Attendance Accountability")
 
-  # Defensive session state safeguards
   if (
       "drivers_df" not in st.session_state
       or st.session_state["drivers_df"] is None
@@ -62,7 +61,11 @@ def render_driver_directory_tab():
           ],
           index=0,
       )
-      new_d_hire = col_d6.date_input("Hire Date")
+      new_d_pref = col_d6.selectbox(
+          "Preferred Shift Pattern",
+          options=["Any / Flexible", "Front Half (Sun-Wed)", "Back Half (Wed-Sat)"],
+          index=0,
+      )
 
       submit_add_d = st.form_submit_button(
           "Add Driver to Master Roster", type="primary", use_container_width=True
@@ -76,8 +79,8 @@ def render_driver_directory_tab():
               "Phone Number": new_d_phone.strip(),
               "Status": new_d_status,
               "Role": new_d_role,
-              "Hire Date": str(new_d_hire),
-              "Preferred Shifts": "Mon,Tue,Wed,Thu,Fri,Sat,Sun",
+              "Hire Date": str(pd.Timestamp.now().date()),
+              "Preferred Shifts": new_d_pref,
               "Overall Score": 100.0,
               "Standing": "Fantastic",
           }
@@ -86,7 +89,7 @@ def render_driver_directory_tab():
           ).reset_index(drop=True)
           st.session_state["drivers_df"] = process_driver_data(updated_drivers)
           safe_save_dataframe(st.session_state["drivers_df"], MASTER_DRIVERS_PATH)
-          load_local_drivers.clear()  # Clear cache to reflect GCS update immediately
+          load_local_drivers.clear()
           log_dispatch_action(
               f"Added driver '{new_d_name.strip()}' to Master Directory.",
               username=active_user,
@@ -123,6 +126,11 @@ def render_driver_directory_tab():
               ],
               required=True,
           ),
+          "Preferred Shifts": st.column_config.SelectboxColumn(
+              "Shift Pattern",
+              options=["Any / Flexible", "Front Half (Sun-Wed)", "Back Half (Wed-Sat)"],
+              required=True,
+          ),
           "Overall Score": st.column_config.NumberColumn(
               "Scorecard Rank", format="%.2f"
           ),
@@ -139,7 +147,7 @@ def render_driver_directory_tab():
         st.session_state["drivers_df"]
     )
     safe_save_dataframe(st.session_state["drivers_df"], MASTER_DRIVERS_PATH)
-    load_local_drivers.clear()  # Clear cache to ensure fresh fetch from GCS
+    load_local_drivers.clear()
     log_dispatch_action(
         "Saved Master Driver Directory updates to disk.", username=active_user
     )
@@ -213,7 +221,7 @@ def render_driver_directory_tab():
           safe_save_dataframe(
               st.session_state["attendance_log_df"], ATTENDANCE_LOG_PATH
           )
-          load_local_attendance_log.clear()  # Clear cache
+          load_local_attendance_log.clear()
 
           log_dispatch_action(
               f"ATTENDANCE LOGGED: '{sel_inf_driver}' marked '{sel_inf_type}' on"
@@ -248,13 +256,10 @@ def render_driver_directory_tab():
       safe_save_dataframe(
           st.session_state["attendance_log_df"], ATTENDANCE_LOG_PATH
       )
-      load_local_attendance_log.clear()  # Clear cache
+      load_local_attendance_log.clear()
       st.success("Infraction ledger saved!")
       st.rerun()
 
-  # ---------------------------------------------------------
-  # 3. ATTENDANCE & RELIABILITY ANALYTICS TABLE
-  # ---------------------------------------------------------
   st.markdown("---")
   st.subheader("📊 Driver Reliability & Attendance Ratings")
   st.caption(
