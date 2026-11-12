@@ -58,7 +58,9 @@ def get_current_amazon_week_info():
 
 def build_blank_schedule_from_drivers(drivers_df, day_headers):
   if drivers_df is None or drivers_df.empty:
-    return pd.DataFrame(columns=["Driver Name"] + day_headers + ["Notes / Requests"])
+    return pd.DataFrame(
+        columns=["Driver Name"] + day_headers + ["Notes / Requests"]
+    )
 
   active_drivers = (
       drivers_df[
@@ -266,7 +268,6 @@ def render_scheduler_tab():
         # Align day columns to current selected week's dated headers
         has_exact_week_cols = all(dh in sch_df.columns for dh in day_headers)
         if not has_exact_week_cols:
-          # Loaded from fallback/different week -> align headers and reset shift cells if headers don't match
           for d_key, d_header in day_key_to_header.items():
             if d_header not in sch_df.columns:
               matching_old_col = next(
@@ -432,29 +433,65 @@ def render_scheduler_tab():
                   clean_val
               )
 
-    st.markdown("### 📊 Live Coverage vs. Station Targets (with +15% Buffer)")
+    # ==========================================
+    # LIVE COVERAGE & DAILY ROLE BREAKDOWN
+    # ==========================================
+    st.markdown("### 📊 Live Coverage & Daily Role Breakdown (with +15% Buffer)")
     metrics_cols = st.columns(7)
 
     work_shifts = ["Driver", "Helper", "OPS-AM", "OPS-PM"]
+    sch_ref_metrics = st.session_state["schedule_df"]
+
     for i, d_header in enumerate(day_headers):
-      if d_header in st.session_state["schedule_df"].columns:
-        driver_count = len(
-            st.session_state["schedule_df"][
-                st.session_state["schedule_df"][d_header].isin(work_shifts)
-            ]
-        )
+      if d_header in sch_ref_metrics.columns:
+        col_vals = sch_ref_metrics[d_header].astype(str).str.strip()
+        total_working = int(col_vals.isin(work_shifts).sum())
+        drv_cnt = int((col_vals == "Driver").sum())
+        hlp_cnt = int((col_vals == "Helper").sum())
+        ops_cnt = int(col_vals.isin(["OPS-AM", "OPS-PM"]).sum())
       else:
-        driver_count = 0
+        total_working = drv_cnt = hlp_cnt = ops_cnt = 0
+
       base_target = expected_routes_dict.get(d_header, 0)
       buffered_target = (
           int((base_target * 1.15) + 0.99) if base_target > 0 else 0
       )
-      delta = driver_count - buffered_target
-      metrics_cols[i].metric(
-          label=d_header, value=driver_count, delta=delta, delta_color="normal"
-      )
+      delta = total_working - buffered_target
+
+      with metrics_cols[i]:
+        st.metric(
+            label=d_header,
+            value=total_working,
+            delta=delta,
+            delta_color="normal",
+        )
+        st.caption(
+            f"🚐 **{drv_cnt}** Drv | 🦺 **{hlp_cnt}** Hlp | 🎧 **{ops_cnt}** OPS"
+        )
 
     st.markdown("---")
+
+    # ==========================================
+    # OVERTIME WARNING BADGE (> 4 SHIFTS / > 40 HRS)
+    # ==========================================
+    existing_day_cols = [c for c in day_headers if c in sch_ref_metrics.columns]
+    ot_drivers = []
+    if not sch_ref_metrics.empty and existing_day_cols:
+      shift_counts = sch_ref_metrics[existing_day_cols].isin(work_shifts).sum(
+          axis=1
+      )
+      ot_mask = shift_counts > 4
+      for idx_ot in sch_ref_metrics[ot_mask].index:
+        d_name_ot = sch_ref_metrics.at[idx_ot, "Driver Name"]
+        cnt_ot = int(shift_counts.at[idx_ot])
+        est_hrs = cnt_ot * 10
+        ot_drivers.append(f"**{d_name_ot}** ({cnt_ot} shifts / ~{est_hrs} hrs)")
+
+    if ot_drivers:
+      st.warning(
+          f"⏱️ **Overtime Alert ({len(ot_drivers)} team member(s) over 4 shifts"
+          f" / 40 hrs):** {', '.join(ot_drivers)}"
+      )
 
     # ==========================================
     # CONFLICT ALERT BANNER
@@ -505,6 +542,7 @@ def render_scheduler_tab():
               "Show All Active Drivers",
               "Show Scheduled Only (Drivers/Helpers/OPS)",
               "Show Available / Unscheduled Only",
+              "Show Over 4 Shifts (OT Risk)",
               "Show with Calendar Notes / Requests",
           ],
           key="sched_view_filter_sel",
@@ -530,7 +568,7 @@ def render_scheduler_tab():
           " balanced daily demand, and a 5-consecutive-day cap across weeks."
       )
 
-      auto_c1, auto_c2, auto_c3 = st.columns([1, 1, 2])
+      auto_c1, auto_c2, _ = st.columns([1, 1, 2])
       with auto_c1:
         clear_existing_auto = st.checkbox(
             "Reset non-PTO shifts before generating",
@@ -552,9 +590,12 @@ def render_scheduler_tab():
           type="primary",
           key="btn_run_pattern_auto",
       ):
-        # Load previous week's schedule to enforce consecutive-day cap across Sun boundary
-        prev_year = int(sel_year) if int(sel_amazon_week) > 1 else int(sel_year) - 1
-        prev_week = int(sel_amazon_week) - 1 if int(sel_amazon_week) > 1 else 52
+        prev_year = (
+            int(sel_year) if int(sel_amazon_week) > 1 else int(sel_year) - 1
+        )
+        prev_week = (
+            int(sel_amazon_week) - 1 if int(sel_amazon_week) > 1 else 52
+        )
         prev_week_df = load_local_schedule(prev_year, prev_week)
 
         updated_sch = auto_generate_pattern_weekly_schedule(
@@ -660,21 +701,24 @@ def render_scheduler_tab():
           st.rerun()
 
     df_display = st.session_state["schedule_df"].copy()
-    existing_day_cols = [c for c in day_headers if c in df_display.columns]
     df_display["Total Days"] = (
         df_display[existing_day_cols].isin(work_shifts).sum(axis=1)
+    )
+    df_display["OT Status"] = df_display["Total Days"].apply(
+        lambda x: f"⚠️ OT ({int(x)*10}h)" if x > 4 else "✅ Reg"
     )
 
     if schedule_view_filter == "Show Scheduled Only (Drivers/Helpers/OPS)":
       df_display = df_display[df_display["Total Days"] > 0]
     elif schedule_view_filter == "Show Available / Unscheduled Only":
       df_display = df_display[df_display["Total Days"] == 0]
+    elif schedule_view_filter == "Show Over 4 Shifts (OT Risk)":
+      df_display = df_display[df_display["Total Days"] > 4]
     elif schedule_view_filter == "Show with Calendar Notes / Requests":
       df_display = df_display[
           df_display["Notes / Requests"].astype(str).str.strip() != ""
       ]
 
-    # Store original index mapping so edits when filtered update the right row in schedule_df
     st.session_state["visible_schedule_indices"] = df_display.index.tolist()
 
     display_cols = ["Driver Name"] + existing_day_cols
@@ -686,8 +730,7 @@ def render_scheduler_tab():
           c for c in existing_day_cols if c != day_quick_focus
       ]
 
-    if "Total Days" in df_display.columns:
-      display_cols.append("Total Days")
+    display_cols.extend(["Total Days", "OT Status"])
     if "Notes / Requests" in df_display.columns:
       display_cols.append("Notes / Requests")
 
@@ -716,6 +759,7 @@ def render_scheduler_tab():
         "Total Days": st.column_config.NumberColumn(
             "Total Days", disabled=True, format="%d days"
         ),
+        "OT Status": st.column_config.TextColumn("Status", disabled=True),
         "Notes / Requests": st.column_config.TextColumn(
             "Notes / Requests",
             help="Synced automatically from Long-Range Calendar.",
