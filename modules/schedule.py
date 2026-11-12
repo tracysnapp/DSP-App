@@ -193,7 +193,11 @@ def generate_discord_top_drivers(
 
 def _get_trailing_work_streak(driver_name_lower, prev_week_df, work_shifts):
   """Counts consecutive work shifts at the end of the previous week (ending Saturday)."""
-  if prev_week_df is None or prev_week_df.empty or "Driver Name" not in prev_week_df.columns:
+  if (
+      prev_week_df is None
+      or prev_week_df.empty
+      or "Driver Name" not in prev_week_df.columns
+  ):
     return 0
 
   match = prev_week_df[
@@ -227,9 +231,7 @@ def _would_exceed_consecutive_limit(
     max_consecutive=5,
 ):
   """Checks if scheduling candidate_idx would create more than max_consecutive straight work days."""
-  worked = [
-      str(row.get(dh, "")).strip() in work_shifts for dh in day_headers
-  ]
+  worked = [str(row.get(dh, "")).strip() in work_shifts for dh in day_headers]
   worked[candidate_idx] = True
 
   streak = trailing_prev_streak
@@ -249,21 +251,17 @@ def auto_generate_pattern_weekly_schedule(
     expected_routes_dict,
     drivers_df=None,
     target_shifts_per_driver=4,
+    min_shifts_per_driver=2,
     prev_week_schedule_df=None,
     max_consecutive_days=5,
     clear_existing_non_pto=False,
 ):
   """
-    Role-aware, demand-balanced auto-scheduler:
-    1. Preserves 'Rqst Off' (and existing shifts unless clear_existing_non_pto=True).
-    2. Prioritizes by Scorecard Rank (higher score gets preferred days first).
-    3. Respects directory Role:
-       - Operations Manager / Dispatcher -> OPS-AM / OPS-PM
-       - Sweeper Specialist -> Helper
-       - Driver Associate / Lead DA -> Driver (or Helper once base route count is met)
-    4. Respects 'Preferred Shifts' (Front Half Sun-Wed, Back Half Wed-Sat, or Any/Flexible).
-    5. Balances 'Any / Flexible' drivers toward days with the highest remaining deficit.
-    6. Enforces max_consecutive_days (default 5) across week boundaries using prev_week_schedule_df.
+    Two-pass, role-aware, demand-balanced auto-scheduler:
+    - Pass 1: Ensures every available team member receives at least `min_shifts_per_driver` (2 shifts/week)
+      in scorecard-rank order so lower-ranked drivers aren't shut out.
+    - Pass 2: Tops up drivers in scorecard-rank order up to `target_shifts_per_driver` (4 shifts/week)
+      within daily +15% buffered targets.
     """
   if schedule_df is None or schedule_df.empty:
     return schedule_df
@@ -342,82 +340,118 @@ def auto_generate_pattern_weekly_schedule(
       for dh in day_headers
   }
 
-  for idx, row in df.iterrows():
-    d_name = str(row.get("Driver Name", "")).strip().lower()
-    current_shifts = sum(
-        1
-        for dh in day_headers
-        if str(row.get(dh, "")).strip() in work_shifts
-    )
-    if current_shifts >= target_shifts_per_driver:
-      continue
-
-    driver_pref = pref_map.get(d_name, "Any").title()
-    driver_role = role_map.get(d_name, "Driver Associate").lower()
-    trailing_streak = _get_trailing_work_streak(
-        d_name, prev_week_schedule_df, work_shifts
-    )
-
-    if "Front" in driver_pref:
-      candidate_indices = list(front_half_indices)
-    elif "Back" in driver_pref:
-      candidate_indices = list(back_half_indices)
-    else:
-      # Sort days by largest remaining staffing deficit so flexible drivers balance the week
-      candidate_indices = sorted(
-          range(len(day_headers)),
-          key=lambda i: (
-              buffered_targets[day_headers[i]]
-              - len(df[df[day_headers[i]].isin(work_shifts)])
-          ),
-          reverse=True,
-      )
-
-    for day_idx in candidate_indices:
-      if current_shifts >= target_shifts_per_driver:
-        break
-
-      dh = day_headers[day_idx]
-      existing_val = str(row.get(dh, "")).strip()
-
-      if existing_val != "" and existing_val.lower() not in ["none", "nan"]:
-        continue
-
-      base_target = expected_routes_dict.get(dh, 0)
-      buf_target = buffered_targets[dh]
-      if buf_target <= 0:
-        continue
-
-      day_current_total = len(df[df[dh].isin(work_shifts)])
-      if day_current_total >= buf_target:
-        continue
-
-      if _would_exceed_consecutive_limit(
-          df.loc[idx],
-          day_headers,
-          day_idx,
+  trailing_streaks = {
+      idx: _get_trailing_work_streak(
+          str(row.get("Driver Name", "")).strip().lower(),
+          prev_week_schedule_df,
           work_shifts,
-          trailing_prev_streak=trailing_streak,
-          max_consecutive=max_consecutive_days,
-      ):
+      )
+      for idx, row in df.iterrows()
+  }
+
+  def _assign_shifts_up_to_cap(shift_cap, allow_overflow_for_minimum=False):
+    for idx, row in df.iterrows():
+      d_name = str(row.get("Driver Name", "")).strip().lower()
+      current_shifts = sum(
+          1
+          for dh in day_headers
+          if str(df.at[idx, dh]).strip() in work_shifts
+      )
+      if current_shifts >= shift_cap:
         continue
 
-      # Determine appropriate shift label based on directory role & daily route saturation
-      if "operations manager" in driver_role or "dispatcher" in driver_role:
-        am_count = len(df[df[dh] == "OPS-AM"])
-        pm_count = len(df[df[dh] == "OPS-PM"])
-        shift_label = "OPS-AM" if am_count <= pm_count else "OPS-PM"
-      elif "sweeper" in driver_role:
-        shift_label = "Helper"
+      driver_pref = pref_map.get(d_name, "Any").title()
+      driver_role = role_map.get(d_name, "Driver Associate").lower()
+      trailing_streak = trailing_streaks[idx]
+
+      if "Front" in driver_pref:
+        # Preferred front-half days first, then remaining active days if needed to meet minimum
+        fallback_days = sorted(
+            [i for i in range(len(day_headers)) if i not in front_half_indices],
+            key=lambda i: (
+                buffered_targets[day_headers[i]]
+                - len(df[df[day_headers[i]].isin(work_shifts)])
+            ),
+            reverse=True,
+        )
+        candidate_indices = list(front_half_indices) + (
+            fallback_days if allow_overflow_for_minimum else []
+        )
+      elif "Back" in driver_pref:
+        fallback_days = sorted(
+            [i for i in range(len(day_headers)) if i not in back_half_indices],
+            key=lambda i: (
+                buffered_targets[day_headers[i]]
+                - len(df[df[day_headers[i]].isin(work_shifts)])
+            ),
+            reverse=True,
+        )
+        candidate_indices = list(back_half_indices) + (
+            fallback_days if allow_overflow_for_minimum else []
+        )
       else:
-        # Once base route count is filled, remaining +15% buffer slots are assigned as Helper/Sweeper
-        active_drivers_today = len(df[df[dh] == "Driver"])
-        shift_label = (
-            "Driver" if active_drivers_today < base_target else "Helper"
+        candidate_indices = sorted(
+            range(len(day_headers)),
+            key=lambda i: (
+                buffered_targets[day_headers[i]]
+                - len(df[df[day_headers[i]].isin(work_shifts)])
+            ),
+            reverse=True,
         )
 
-      df.at[idx, dh] = shift_label
-      current_shifts += 1
+      for day_idx in candidate_indices:
+        if current_shifts >= shift_cap:
+          break
+
+        dh = day_headers[day_idx]
+        existing_val = str(df.at[idx, dh]).strip()
+
+        if existing_val != "" and existing_val.lower() not in ["none", "nan"]:
+          continue
+
+        base_target = expected_routes_dict.get(dh, 0)
+        buf_target = buffered_targets[dh]
+        if buf_target <= 0:
+          continue
+
+        day_current_total = len(df[df[dh].isin(work_shifts)])
+        if day_current_total >= buf_target:
+          continue
+
+        if _would_exceed_consecutive_limit(
+            df.loc[idx],
+            day_headers,
+            day_idx,
+            work_shifts,
+            trailing_prev_streak=trailing_streak,
+            max_consecutive=max_consecutive_days,
+        ):
+          continue
+
+        if "operations manager" in driver_role or "dispatcher" in driver_role:
+          am_count = len(df[df[dh] == "OPS-AM"])
+          pm_count = len(df[df[dh] == "OPS-PM"])
+          shift_label = "OPS-AM" if am_count <= pm_count else "OPS-PM"
+        elif "sweeper" in driver_role:
+          shift_label = "Helper"
+        else:
+          active_drivers_today = len(df[df[dh] == "Driver"])
+          shift_label = (
+              "Driver" if active_drivers_today < base_target else "Helper"
+          )
+
+        df.at[idx, dh] = shift_label
+        current_shifts += 1
+
+  # Pass 1: Guarantee minimum 2 shifts/week across all drivers in priority order
+  _assign_shifts_up_to_cap(
+      min_shifts_per_driver, allow_overflow_for_minimum=True
+  )
+
+  # Pass 2: Top up highest-priority drivers up to full 4 shifts/week
+  _assign_shifts_up_to_cap(
+      target_shifts_per_driver, allow_overflow_for_minimum=False
+  )
 
   df = df.drop(columns=["__temp_score"], errors="ignore")
   sort_cols = [
