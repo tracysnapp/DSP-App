@@ -1,5 +1,6 @@
 import datetime
 import io
+import json
 import logging
 import os
 import re
@@ -34,6 +35,9 @@ CLOSING_CHECKLIST_PATH = os.getenv(
 ACCESS_CODES_PATH = os.getenv("ACCESS_CODES_PATH", "access_codes.xlsx")
 MASTER_DRIVERS_PATH = os.getenv("MASTER_DRIVERS_PATH", "master_drivers.xlsx")
 WEEKLY_SCHEDULE_PATH = os.getenv("WEEKLY_SCHEDULE_PATH", "weekly_schedule.xlsx")
+SCHEDULES_DIR = os.getenv("SCHEDULES_DIR", "schedules")
+LONG_RANGE_PTO_PATH = os.getenv("LONG_RANGE_PTO_PATH", "long_range_pto.xlsx")
+WEEKLY_TARGETS_PATH = os.getenv("WEEKLY_TARGETS_PATH", "weekly_targets.json")
 SCORECARDS_PATH = os.getenv("SCORECARDS_PATH", "master_scorecards.xlsx")
 ATTENDANCE_LOG_PATH = os.getenv("ATTENDANCE_LOG_PATH", "attendance_log.xlsx")
 INCIDENTS_LOG_PATH = os.getenv("INCIDENTS_LOG_PATH", "master_incidents.xlsx")
@@ -108,7 +112,7 @@ def read_gcs_dataframe(blob_path: str) -> pd.DataFrame:
 
 
 def save_gcs_dataframe(df: pd.DataFrame, blob_path: str):
-  if df is None or df.empty:
+  if df is None:
     return
 
   try:
@@ -131,8 +135,8 @@ def save_gcs_dataframe(df: pd.DataFrame, blob_path: str):
     print(f"Error saving {blob_path} to GCS: {e}")
 
 
-def safe_save_dataframe(df, file_path):
-  if df is None or df.empty:
+def safe_save_dataframe(df, file_path, allow_empty=False):
+  if df is None or (df.empty and not allow_empty):
     return
 
   if STORAGE_MODE == "CLOUD":
@@ -172,6 +176,46 @@ def load_dataframe_auto(file_path: str) -> pd.DataFrame:
         else pd.read_csv(file_path)
     )
   return pd.DataFrame()
+
+
+def load_json_auto(file_path: str) -> dict:
+  if STORAGE_MODE == "CLOUD":
+    try:
+      bucket = get_gcs_bucket()
+      blob = bucket.blob(file_path)
+      if not blob.exists():
+        return {}
+      return json.loads(blob.download_as_text())
+    except Exception as e:
+      print(f"Error reading JSON {file_path} from GCS: {e}")
+      return {}
+
+  if os.path.exists(file_path):
+    try:
+      with open(file_path, "r") as f:
+        return json.load(f)
+    except Exception:
+      pass
+  return {}
+
+
+def save_json_auto(data: dict, file_path: str):
+  if STORAGE_MODE == "CLOUD":
+    try:
+      bucket = get_gcs_bucket()
+      blob = bucket.blob(file_path)
+      blob.upload_from_string(
+          json.dumps(data, indent=2), content_type="application/json"
+      )
+    except Exception as e:
+      print(f"Error saving JSON {file_path} to GCS: {e}")
+    return
+
+  dir_name = os.path.dirname(file_path)
+  if dir_name and not os.path.exists(dir_name):
+    os.makedirs(dir_name, exist_ok=True)
+  with open(file_path, "w") as f:
+    json.dump(data, f, indent=2)
 
 
 # ---------------------------------------------------------
@@ -304,9 +348,25 @@ def get_van_last_driven_dict():
   van_last_date = {}
 
   if fleet_df is not None and not fleet_df.empty:
-    bumper_col = next((c for c in fleet_df.columns if 'bumper' in c.lower() or 'vehicle' in c.lower() or 'name' in c.lower()), None)
-    date_col = next((c for c in fleet_df.columns if 'driven' in c.lower() or 'date' in c.lower()), None)
-    
+    bumper_col = next(
+        (
+            c
+            for c in fleet_df.columns
+            if "bumper" in c.lower()
+            or "vehicle" in c.lower()
+            or "name" in c.lower()
+        ),
+        None,
+    )
+    date_col = next(
+        (
+            c
+            for c in fleet_df.columns
+            if "driven" in c.lower() or "date" in c.lower()
+        ),
+        None,
+    )
+
     if bumper_col and date_col:
       for _, row in fleet_df.iterrows():
         b = str(row[bumper_col]).strip()
@@ -316,39 +376,62 @@ def get_van_last_driven_dict():
             van_last_date[b] = pd.to_datetime(d).date()
           except Exception:
             continue
-            
+
   return van_last_date
 
 
 def update_van_last_driven(van_bumper, activity_date=None):
   """Updates the 'Last Driven' date for a specific van bumper in master_fleet.xlsx instantly."""
-  if not van_bumper or str(van_bumper).strip().upper() in ["NAN", "NONE", "", "UNASSIGNED", "N/A"]:
+  if not van_bumper or str(van_bumper).strip().upper() in [
+      "NAN",
+      "NONE",
+      "",
+      "UNASSIGNED",
+      "N/A",
+  ]:
     return
-  
+
   if activity_date is None:
     activity_date = datetime.date.today().strftime("%Y-%m-%d")
-    
+
   fleet_df = load_dataframe_auto(MASTER_FLEET_PATH)
   if fleet_df is not None and not fleet_df.empty:
-    bumper_col = next((c for c in fleet_df.columns if 'bumper' in c.lower() or 'vehicle' in c.lower() or 'name' in c.lower()), fleet_df.columns[0])
-    date_col = next((c for c in fleet_df.columns if 'driven' in c.lower() or 'date' in c.lower()), None)
-    
+    bumper_col = next(
+        (
+            c
+            for c in fleet_df.columns
+            if "bumper" in c.lower()
+            or "vehicle" in c.lower()
+            or "name" in c.lower()
+        ),
+        fleet_df.columns[0],
+    )
+    date_col = next(
+        (
+            c
+            for c in fleet_df.columns
+            if "driven" in c.lower() or "date" in c.lower()
+        ),
+        None,
+    )
+
     if not date_col:
       date_col = "Last Driven"
       fleet_df[date_col] = ""
     else:
       fleet_df[date_col] = fleet_df[date_col].astype(object)
-      
-    mask = fleet_df[bumper_col].astype(str).str.strip().str.upper() == str(van_bumper).strip().upper()
+
+    mask = (
+        fleet_df[bumper_col].astype(str).str.strip().str.upper()
+        == str(van_bumper).strip().upper()
+    )
     if mask.any():
       fleet_df.loc[mask, date_col] = activity_date
       safe_save_dataframe(fleet_df, MASTER_FLEET_PATH)
-      
-      # Clear caches so the new dates register across the app instantly
+
       load_local_fleet.clear()
       get_van_last_driven_dict.clear()
-      
-      # Update active session state if loaded
+
       if "fleet_df" in st.session_state:
         st.session_state["fleet_df"] = load_local_fleet()
 
@@ -447,9 +530,23 @@ def load_local_drivers():
   )
 
 
+def get_week_schedule_path(year: int = None, week_num: int = None) -> str:
+  if year is not None and week_num is not None:
+    return f"{SCHEDULES_DIR}/schedule_{int(year)}_W{int(week_num):02d}.xlsx"
+  return WEEKLY_SCHEDULE_PATH
+
+
 @st.cache_data(ttl=60, show_spinner=False)
-def load_local_schedule():
-  df = load_dataframe_auto(WEEKLY_SCHEDULE_PATH)
+def load_local_schedule(year: int = None, week_num: int = None):
+  df = pd.DataFrame()
+  if year is not None and week_num is not None:
+    week_path = get_week_schedule_path(year, week_num)
+    df = load_dataframe_auto(week_path)
+
+  # Fallback to legacy single-file schedule if per-week file does not exist yet
+  if df.empty:
+    df = load_dataframe_auto(WEEKLY_SCHEDULE_PATH)
+
   if not df.empty:
     try:
       if "Driver Name" in df.columns:
@@ -461,15 +558,91 @@ def load_local_schedule():
             .str[0]
             .str.upper()
         )
-        df = df.sort_values(
-            by=["first_name", "Driver Name"], ascending=[True, True]
-        ).drop(columns=["first_name"]).reset_index(drop=True)
+        df = (
+            df.sort_values(
+                by=["first_name", "Driver Name"], ascending=[True, True]
+            )
+            .drop(columns=["first_name"])
+            .reset_index(drop=True)
+        )
       return df.copy()
     except Exception:
       pass
   return pd.DataFrame(
       columns=["Driver Name", "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
   )
+
+
+def save_weekly_schedule_to_storage(
+    df: pd.DataFrame, year: int = None, week_num: int = None
+):
+  if df is None or df.empty:
+    return
+  if year is not None and week_num is not None:
+    safe_save_dataframe(df, get_week_schedule_path(year, week_num))
+  # Also keep legacy path updated as latest active schedule fallback
+  safe_save_dataframe(df, WEEKLY_SCHEDULE_PATH)
+  load_local_schedule.clear()
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def load_long_range_pto_storage() -> pd.DataFrame:
+  df = load_dataframe_auto(LONG_RANGE_PTO_PATH)
+  if df.empty and os.path.exists("data/long_range_pto.csv"):
+    try:
+      df = pd.read_csv("data/long_range_pto.csv")
+    except Exception:
+      df = pd.DataFrame()
+
+  if not df.empty:
+    for col in df.columns:
+      df[col] = (
+          df[col]
+          .fillna("")
+          .astype(str)
+          .replace(["nan", "NaN", "None", "<NA>"], "")
+      )
+    return df.copy()
+
+  return pd.DataFrame(
+      columns=[
+          "Driver Name",
+          "Start Date",
+          "End Date",
+          "Category",
+          "Reason / Notes",
+      ]
+  )
+
+
+def save_long_range_pto_storage(df: pd.DataFrame):
+  clean_df = df.copy()
+  for col in clean_df.columns:
+    clean_df[col] = (
+        clean_df[col]
+        .fillna("")
+        .astype(str)
+        .replace(["nan", "NaN", "None", "<NA>"], "")
+    )
+  safe_save_dataframe(clean_df, LONG_RANGE_PTO_PATH, allow_empty=True)
+  load_long_range_pto_storage.clear()
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def load_weekly_targets_storage() -> dict:
+  data = load_json_auto(WEEKLY_TARGETS_PATH)
+  if not data and os.path.exists("data/weekly_targets.json"):
+    try:
+      with open("data/weekly_targets.json", "r") as f:
+        data = json.load(f)
+    except Exception:
+      data = {}
+  return data if isinstance(data, dict) else {}
+
+
+def save_weekly_targets_storage(targets_dict: dict):
+  save_json_auto(targets_dict, WEEKLY_TARGETS_PATH)
+  load_weekly_targets_storage.clear()
 
 
 @st.cache_data(ttl=60, show_spinner=False)
