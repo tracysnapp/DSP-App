@@ -9,6 +9,7 @@ from engine import (
     MASTER_FLEET_PATH,
     get_van_last_driven_dict,
     load_local_drivers,
+    load_local_schedule,
     log_dispatch_action,
     safe_save_dataframe,
     save_snapshot_file,
@@ -18,10 +19,12 @@ from modules.roster import (
     condense_service_type,
     generate_printable_html,
     get_prioritized_reserve_drivers,
+    get_scheduled_not_routed_summary,
     get_sorted_roster,
     run_auto_assignment,
     update_closing_checklist_assignments,
 )
+from views.scheduler_view import get_current_amazon_week_info
 
 
 def normalize_name(name_str):
@@ -74,9 +77,30 @@ def format_van_with_recency_and_size(van_bumper, fleet_df, last_driven_map):
   v_type = ""
 
   if fleet_df is not None and not fleet_df.empty:
-    name_col = next((c for c in fleet_df.columns if str(c).strip().lower() in ['van bumper', 'vehiclename', 'bumper']), fleet_df.columns[0])
-    st_c = next((c for c in fleet_df.columns if str(c).strip().lower() in ['size bracket', 'st', 'servicetype']), None)
-    type_c = next((c for c in fleet_df.columns if str(c).strip().lower() in ['type_clean', 'vehicle type']), None)
+    name_col = next(
+        (
+            c
+            for c in fleet_df.columns
+            if str(c).strip().lower() in ["van bumper", "vehiclename", "bumper"]
+        ),
+        fleet_df.columns[0],
+    )
+    st_c = next(
+        (
+            c
+            for c in fleet_df.columns
+            if str(c).strip().lower() in ["size bracket", "st", "servicetype"]
+        ),
+        None,
+    )
+    type_c = next(
+        (
+            c
+            for c in fleet_df.columns
+            if str(c).strip().lower() in ["type_clean", "vehicle type"]
+        ),
+        None,
+    )
 
     match = fleet_df[fleet_df[name_col].astype(str).str.strip() == bmp]
     if not match.empty:
@@ -100,6 +124,65 @@ def format_van_with_recency_and_size(van_bumper, fleet_df, last_driven_map):
   return f"{bmp}{type_part} | {recency_str}"
 
 
+def _get_today_schedule_df():
+  """Loads the current operating week's schedule from session state or GCS."""
+  curr_op_year, curr_amazon_week = get_current_amazon_week_info()
+  curr_week_key = f"{int(curr_op_year)}-W{int(curr_amazon_week):02d}"
+
+  if (
+      st.session_state.get("loaded_week_key") == curr_week_key
+      and "schedule_df" in st.session_state
+      and st.session_state["schedule_df"] is not None
+      and not st.session_state["schedule_df"].empty
+  ):
+    return st.session_state["schedule_df"], curr_week_key
+
+  loaded_sch = load_local_schedule(int(curr_op_year), int(curr_amazon_week))
+  return loaded_sch, curr_week_key
+
+
+def _render_scheduled_not_routed_alert(
+    today_sch_df, routed_names, drivers_df, week_key_label
+):
+  """Renders the morning 'Scheduled but Not Routed' banner and table."""
+  if today_sch_df is None or today_sch_df.empty:
+    return
+
+  today_day_abbr = pd.Timestamp.now().strftime("%a")
+  today_date_label = pd.Timestamp.now().strftime("%a %d %b")
+
+  unrouted_df, routed_unscheduled = get_scheduled_not_routed_summary(
+      today_sch_df,
+      routed_names,
+      master_drivers_df=drivers_df,
+      day_of_week=today_day_abbr,
+  )
+
+  if not unrouted_df.empty or routed_unscheduled:
+    header_title = (
+        f"📋 Morning Attendance & Unrouted Check ({today_date_label} |"
+        f" {week_key_label})"
+    )
+    if not unrouted_df.empty:
+      header_title += f" — {len(unrouted_df)} Scheduled & Unrouted"
+
+    with st.expander(header_title, expanded=True):
+      if not unrouted_df.empty:
+        st.info(
+            f"**{len(unrouted_df)} team member(s)** are scheduled for"
+            f" **{today_date_label}** in the Master Schedule but do **not**"
+            " have a route assigned below (expect them for Sweeper/Rescue,"
+            " OPS Launch, On-Call, or VTO):"
+        )
+        st.dataframe(unrouted_df, use_container_width=True, hide_index=True)
+
+      if routed_unscheduled:
+        st.warning(
+            f"⚠️ **Routed but NOT on Today's Schedule ({len(routed_unscheduled)}):**"
+            f" {', '.join(routed_unscheduled)}"
+        )
+
+
 def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
   st.subheader("Daily Route Assignment & Roster")
 
@@ -111,16 +194,31 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
   # Load van recency map ONCE at the start of the tab render
   last_driven_map = get_van_last_driven_dict()
 
+  # Load current operating week's schedule for morning unrouted check & reserves
+  today_sch_df, curr_week_key = _get_today_schedule_df()
+
   if fleet is not None:
-    # Check for 'Status' or 'status_clean' column robustly
-    status_col_fleet = next((c for c in fleet.columns if str(c).strip().lower() in ['status', 'status_clean']), None)
-    
+    status_col_fleet = next(
+        (
+            c
+            for c in fleet.columns
+            if str(c).strip().lower() in ["status", "status_clean"]
+        ),
+        None,
+    )
+
     if status_col_fleet:
-      active_mask = fleet[status_col_fleet].astype(str).str.strip().str.upper().isin(["UP", "ACTIVE", "OPERATIONAL", "WORKABLE", "AVAILABLE"])
+      active_mask = (
+          fleet[status_col_fleet]
+          .astype(str)
+          .str.strip()
+          .str.upper()
+          .isin(["UP", "ACTIVE", "OPERATIONAL", "WORKABLE", "AVAILABLE"])
+      )
       active_fleet_df = fleet[active_mask].copy()
     else:
       active_fleet_df = fleet.copy()
-      
+
     active_count = len(active_fleet_df)
 
     if (
@@ -173,7 +271,8 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
             ),
             None,
         )
-        if driver_col and drivers_df is not None and not drivers_df.empty:
+        cortex_drivers = []
+        if driver_col:
           cortex_drivers = [
               str(d).strip()
               for d in routes_df[driver_col].dropna().unique()
@@ -181,12 +280,16 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
               and str(d).strip().lower()
               not in ["nan", "none", "null", "unassigned"]
           ]
+
+        if cortex_drivers and drivers_df is not None and not drivers_df.empty:
           known_drivers = list(
               drivers_df["Driver Name"].dropna().astype(str).str.strip().unique()
           )
 
           new_drivers = [
-              d for d in cortex_drivers if not is_driver_in_directory(d, known_drivers)
+              d
+              for d in cortex_drivers
+              if not is_driver_in_directory(d, known_drivers)
           ]
 
           if new_drivers:
@@ -206,7 +309,7 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
                     "Status": "ACTIVE",
                     "Role": "Driver Associate",
                     "Hire Date": str(pd.Timestamp.now().strftime("%Y-%m-%d")),
-                    "Preferred Shifts": "Mon,Tue,Wed,Thu,Fri,Sat,Sun",
+                    "Preferred Shifts": "Any / Flexible",
                     "Overall Score": 100.0,
                     "Standing": "Fantastic",
                 })
@@ -232,6 +335,12 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
         c1.metric("Today's Cortex Routes", len(routes_df))
         c2.metric("Active Vans (Status: UP)", active_count)
 
+        # Show Morning Scheduled-but-Not-Routed Flag immediately upon Cortex upload
+        if cortex_drivers:
+          _render_scheduled_not_routed_alert(
+              today_sch_df, cortex_drivers, drivers_df, curr_week_key
+          )
+
         # PRIORITY VAN PRE-ASSIGNMENT SELECTION
         with st.expander(
             "⭐ Priority Van Pre-Assignments (Force Vans on Road / Rotate Stale"
@@ -245,7 +354,15 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
               " a week."
           )
 
-          van_name_col = next((c for c in active_fleet_df.columns if str(c).strip().lower() in ['van bumper', 'vehiclename', 'bumper']), active_fleet_df.columns[0])
+          van_name_col = next(
+              (
+                  c
+                  for c in active_fleet_df.columns
+                  if str(c).strip().lower()
+                  in ["van bumper", "vehiclename", "bumper"]
+              ),
+              active_fleet_df.columns[0],
+          )
           active_van_bumpers = (
               active_fleet_df[van_name_col].astype(str).str.strip().tolist()
               if not active_fleet_df.empty
@@ -262,7 +379,6 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
               if d_ago >= 7:
                 stale_vans_list.append(v)
 
-          # --- STALE VAN BANNER MESSAGE ---
           if stale_vans_list:
             st.warning(
                 f"⚠️ **Stale Fleet Alert:** Found **{len(stale_vans_list)}** active"
@@ -280,7 +396,9 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
             st.rerun()
 
           van_display_map = {
-              v: format_van_with_recency_and_size(v, active_fleet_df, last_driven_map)
+              v: format_van_with_recency_and_size(
+                  v, active_fleet_df, last_driven_map
+              )
               for v in active_van_bumpers
           }
 
@@ -329,6 +447,21 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
           "current_roster" in st.session_state
           and not st.session_state["current_roster"].empty
       ):
+        # Show Morning Scheduled-but-Not-Routed Flag against active roster when no new file is staged
+        if not cortex_file:
+          active_routed = (
+              st.session_state["current_roster"]["Driver"].dropna().tolist()
+              if "Driver" in st.session_state["current_roster"].columns
+              else []
+          )
+          if "Helper" in st.session_state["current_roster"].columns:
+            active_routed.extend(
+                st.session_state["current_roster"]["Helper"].dropna().tolist()
+            )
+          _render_scheduled_not_routed_alert(
+              today_sch_df, active_routed, drivers_df, curr_week_key
+          )
+
         st.markdown("---")
 
         with st.expander(
@@ -342,11 +475,15 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
           phone_map = {}
           if phones is not None and not phones.empty:
             p_active = (
-                phones[~phones["status_clean"].isin(["INACTIVE", "RETIRED", "DELETED"])]
+                phones[
+                    ~phones["status_clean"].isin(["INACTIVE", "RETIRED", "DELETED"])
+                ]
                 if "status_clean" in phones.columns
                 else phones
             )
-            phone_map = dict(zip(p_active["device_clean"], p_active["number_clean"]))
+            phone_map = dict(
+                zip(p_active["device_clean"], p_active["number_clean"])
+            )
 
           driver_option_map = {}
           assigned_driver_options = []
@@ -362,7 +499,15 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
             driver_option_map[display_label] = idx
 
           used_vans = roster_df["Van Bumper"].astype(str).str.strip().tolist()
-          van_name_col_act = next((c for c in active_fleet_df.columns if str(c).strip().lower() in ['van bumper', 'vehiclename', 'bumper']), active_fleet_df.columns[0])
+          van_name_col_act = next(
+              (
+                  c
+                  for c in active_fleet_df.columns
+                  if str(c).strip().lower()
+                  in ["van bumper", "vehiclename", "bumper"]
+              ),
+              active_fleet_df.columns[0],
+          )
           active_van_names = (
               active_fleet_df[van_name_col_act].astype(str).str.strip().tolist()
               if not active_fleet_df.empty
@@ -383,7 +528,7 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
               day_name = pd.Timestamp.now().strftime("%a")
               prioritized_reserves = get_prioritized_reserve_drivers(
                   roster_df,
-                  st.session_state.get("schedule_df", None),
+                  today_sch_df,
                   st.session_state.get("drivers_df", None),
                   day_of_week=day_name,
               )
@@ -404,7 +549,11 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
                 chosen_reserve = manual_res_name.strip()
               else:
                 chosen_reserve = next(
-                    (p[1] for p in prioritized_reserves if p[0] == selected_res_label),
+                    (
+                        p[1]
+                        for p in prioritized_reserves
+                        if p[0] == selected_res_label
+                    ),
                     "",
                 )
 
@@ -456,8 +605,24 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
                 target_idx = driver_option_map[van_target_sel]
                 old_van = roster_df.at[target_idx, "Van Bumper"]
 
-                fleet_name_col = next((c for c in fleet.columns if str(c).strip().lower() in ['van bumper', 'vehiclename', 'bumper']), fleet.columns[0])
-                st_size_col = next((c for c in fleet.columns if str(c).strip().lower() in ['size bracket', 'st', 'servicetype']), fleet.columns[0])
+                fleet_name_col = next(
+                    (
+                        c
+                        for c in fleet.columns
+                        if str(c).strip().lower()
+                        in ["van bumper", "vehiclename", "bumper"]
+                    ),
+                    fleet.columns[0],
+                )
+                st_size_col = next(
+                    (
+                        c
+                        for c in fleet.columns
+                        if str(c).strip().lower()
+                        in ["size bracket", "st", "servicetype"]
+                    ),
+                    fleet.columns[0],
+                )
 
                 van_matches = (
                     fleet[
@@ -489,7 +654,9 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
                 )
                 update_live_roster_fn(
                     roster_df,
-                    toast_msg=f"Reassigned route from Van #{old_van} to Van #{new_van_sel}!",
+                    toast_msg=(
+                        f"Reassigned route from Van #{old_van} to Van #{new_van_sel}!"
+                    ),
                 )
                 st.rerun()
             elif not unassigned_vans:
@@ -498,9 +665,32 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
           # 3. ADD SWEEPER
           with col_sw3:
             st.markdown("#### 🧹 Add Sweeper")
-            sweeper_driver = st.text_input(
-                "Sweeper Driver Name", value="Unassigned Sweeper", key="swp_name"
+            day_name_swp = pd.Timestamp.now().strftime("%a")
+            swp_reserves = get_prioritized_reserve_drivers(
+                roster_df,
+                today_sch_df,
+                st.session_state.get("drivers_df", None),
+                day_of_week=day_name_swp,
             )
+            swp_labels = ["Unassigned Sweeper"] + [p[0] for p in swp_reserves] + [
+                "Other (Type Manual Name)"
+            ]
+            swp_sel = st.selectbox(
+                "Select Sweeper Driver",
+                options=swp_labels,
+                key="swp_driver_sel",
+            )
+            if swp_sel == "Other (Type Manual Name)":
+              sweeper_driver = st.text_input(
+                  "Sweeper Driver Name", value="", key="swp_name"
+              ).strip()
+            elif swp_sel == "Unassigned Sweeper":
+              sweeper_driver = "Unassigned Sweeper"
+            else:
+              sweeper_driver = next(
+                  (p[1] for p in swp_reserves if p[0] == swp_sel),
+                  "Unassigned Sweeper",
+              )
 
             if unassigned_vans:
               van_label_map = {
@@ -517,8 +707,24 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
               )
 
               if st.button("Add Sweeper to Roster"):
-                fleet_name_col = next((c for c in fleet.columns if str(c).strip().lower() in ['van bumper', 'vehiclename', 'bumper']), fleet.columns[0])
-                st_size_col = next((c for c in fleet.columns if str(c).strip().lower() in ['size bracket', 'st', 'servicetype']), fleet.columns[0])
+                fleet_name_col = next(
+                    (
+                        c
+                        for c in fleet.columns
+                        if str(c).strip().lower()
+                        in ["van bumper", "vehiclename", "bumper"]
+                    ),
+                    fleet.columns[0],
+                )
+                st_size_col = next(
+                    (
+                        c
+                        for c in fleet.columns
+                        if str(c).strip().lower()
+                        in ["size bracket", "st", "servicetype"]
+                    ),
+                    fleet.columns[0],
+                )
 
                 van_matches = (
                     fleet[
@@ -553,7 +759,7 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
                     "Req Size": "N/A",
                     "Van Bumper": str(selected_swp_van),
                     "Sel Size": str(sel_st),
-                    "Driver": str(sweeper_driver),
+                    "Driver": str(sweeper_driver or "Unassigned Sweeper"),
                     "Helper": "",
                     "Wave": "",
                     "Pad": "",
@@ -580,7 +786,9 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
                 )
                 st.rerun()
             else:
-              st.warning("No unassigned active ('UP') vans available in fleet tracker.")
+              st.warning(
+                  "No unassigned active ('UP') vans available in fleet tracker."
+              )
 
           # 4. REMOVE DRIVER / ROUTE ACTION
           with col_sw4:
@@ -619,14 +827,17 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
                       ),
                   )
                 else:
-                  roster_df = roster_df.drop(index=target_idx).reset_index(drop=True)
+                  roster_df = roster_df.drop(index=target_idx).reset_index(
+                      drop=True
+                  )
                   log_dispatch_action(
                       f"Dropped Route {target_route} (Driver: {target_driver})"
                       " completely from active roster.",
                       username=active_user,
                   )
                   update_live_roster_fn(
-                      roster_df, toast_msg=f"Dropped Route {target_route} completely!"
+                      roster_df,
+                      toast_msg=f"Dropped Route {target_route} completely!",
                   )
                 st.rerun()
             else:
@@ -660,13 +871,16 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
               key="ext_rt_size",
           )
           extra_dep_time = ex_col3.text_input(
-              "Departure Time*", value="10:00 AM", placeholder="e.g. 10:15 AM", key="ext_rt_dep"
+              "Departure Time*",
+              value="10:00 AM",
+              placeholder="e.g. 10:15 AM",
+              key="ext_rt_dep",
           )
 
           day_name = pd.Timestamp.now().strftime("%a")
           extra_prio_reserves = get_prioritized_reserve_drivers(
               roster_df,
-              st.session_state.get("schedule_df", None),
+              today_sch_df,
               st.session_state.get("drivers_df", None),
               day_of_week=day_name,
           )
@@ -689,7 +903,8 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
             final_extra_driver = "UNASSIGNED"
           else:
             final_extra_driver = next(
-                (p[1] for p in extra_prio_reserves if p[0] == extra_driver_sel), ""
+                (p[1] for p in extra_prio_reserves if p[0] == extra_driver_sel),
+                "",
             )
 
           extra_helper = ex_col6.text_input(
@@ -732,8 +947,24 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
                 chosen_van = "UNASSIGNED"
 
               if chosen_van != "UNASSIGNED" and chosen_van != "NO VANS AVAILABLE":
-                fleet_name_col = next((c for c in fleet.columns if str(c).strip().lower() in ['van bumper', 'vehiclename', 'bumper']), fleet.columns[0])
-                st_size_col = next((c for c in fleet.columns if str(c).strip().lower() in ['size bracket', 'st', 'servicetype']), fleet.columns[0])
+                fleet_name_col = next(
+                    (
+                        c
+                        for c in fleet.columns
+                        if str(c).strip().lower()
+                        in ["van bumper", "vehiclename", "bumper"]
+                    ),
+                    fleet.columns[0],
+                )
+                st_size_col = next(
+                    (
+                        c
+                        for c in fleet.columns
+                        if str(c).strip().lower()
+                        in ["size bracket", "st", "servicetype"]
+                    ),
+                    fleet.columns[0],
+                )
 
                 van_matches = (
                     fleet[
@@ -858,7 +1089,8 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
                   username=active_user,
               )
               update_live_roster_fn(
-                  roster_df, toast_msg="Loading pad assignments updated across roster!"
+                  roster_df,
+                  toast_msg="Loading pad assignments updated across roster!",
               )
               st.rerun()
           else:
@@ -880,7 +1112,9 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
         phone_number_lookup = {}
         if phones is not None and not phones.empty:
           p_active = (
-              phones[~phones["status_clean"].isin(["INACTIVE", "RETIRED", "DELETED"])]
+              phones[
+                  ~phones["status_clean"].isin(["INACTIVE", "RETIRED", "DELETED"])
+              ]
               if "status_clean" in phones.columns
               else phones
           )
@@ -907,7 +1141,8 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
         sorted_unassigned_phones = sorted(unassigned_phones, key=try_int_sort)
 
         with st.expander(
-            "📱 Manage Route Phone Assignments (Unassigned Pool Only)", expanded=False
+            "📱 Manage Route Phone Assignments (Unassigned Pool Only)",
+            expanded=False,
         ):
           st.caption(
               "Select a route below to assign or change its phone ID using only"
@@ -955,7 +1190,9 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
               now_filename = (
                   f"roster_{pd.Timestamp.now().strftime('%Y-%m-%d_%H%M')}.xlsx"
               )
-              save_snapshot_file(st.session_state["current_roster"], now_filename)
+              save_snapshot_file(
+                  st.session_state["current_roster"], now_filename
+              )
               st.rerun()
 
         def on_roster_change():
@@ -968,9 +1205,9 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
             for row_idx, col_changes in changes.get("edited_rows", {}).items():
               if "Phone ID" in col_changes:
                 dev_id = str(col_changes["Phone ID"]).strip()
-                st.session_state["current_roster"].at[row_idx, "Phone Number"] = (
-                    phone_number_lookup.get(dev_id, "")
-                )
+                st.session_state["current_roster"].at[
+                    row_idx, "Phone Number"
+                ] = phone_number_lookup.get(dev_id, "")
 
             update_closing_checklist_assignments(
                 st.session_state["current_roster"], st.session_state
@@ -1025,9 +1262,16 @@ def render_dispatch_roster_tab(cortex_file, update_live_roster_fn):
             mime="text/csv",
         )
     else:
+      # Even before uploading today's Cortex file, show everyone scheduled today if a schedule exists
+      if today_sch_df is not None and not today_sch_df.empty:
+        _render_scheduled_not_routed_alert(
+            today_sch_df, [], drivers_df, curr_week_key
+        )
       st.info(
           "Upload today's Cortex route export in the sidebar to run"
           " auto-assignments or load a historical roster."
       )
   else:
-    st.warning(f"No local `{MASTER_FLEET_PATH}` file found in your project folder.")
+    st.warning(
+        f"No local `{MASTER_FLEET_PATH}` file found in your project folder."
+    )
