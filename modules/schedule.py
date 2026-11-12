@@ -130,9 +130,10 @@ def generate_discord_top_drivers(top_drivers_df, week_str="2026-W41", min_pkg_th
 def auto_generate_pattern_weekly_schedule(schedule_df, day_headers, expected_routes_dict, drivers_df=None, target_shifts_per_driver=4):
     """
     Automatically assigns shifts targeting 4 shifts/week while respecting:
-    1. Driver-specific 'Preferred Shifts' (Front Half, Back Half, or Any).
-    2. Existing 'Rqst Off' or calendar constraints.
-    3. Daily route volume targets.
+    1. Scorecard rank priority (higher score gets scheduled first).
+    2. Driver-specific 'Preferred Shifts' (Front Half, Back Half, or Any).
+    3. Existing 'Rqst Off' or calendar constraints.
+    4. Daily route volume targets.
     """
     if schedule_df is None or schedule_df.empty:
         return schedule_df
@@ -140,14 +141,26 @@ def auto_generate_pattern_weekly_schedule(schedule_df, day_headers, expected_rou
     df = schedule_df.copy()
     work_shifts = ["Driver", "Helper", "OPS-AM", "OPS-PM"]
 
+    # Extract preferences and scorecard scores from drivers_df
     pref_map = {}
+    score_map = {}
     if drivers_df is not None and not drivers_df.empty and "Driver Name" in drivers_df.columns:
         p_col = next((c for c in drivers_df.columns if "pref" in c.lower() or "shift" in c.lower() or "pattern" in c.lower()), None)
-        if p_col:
-            for _, r in drivers_df.iterrows():
-                d_name = str(r.get("Driver Name", "")).strip().lower()
-                pref_val = str(r.get(p_col, "Any")).strip()
-                pref_map[d_name] = pref_val
+        s_col = next((c for c in drivers_df.columns if "score" in c.lower() or "rank" in c.lower()), None)
+        
+        for _, r in drivers_df.iterrows():
+            d_name = str(r.get("Driver Name", "")).strip().lower()
+            if p_col:
+                pref_map[d_name] = str(r.get(p_col, "Any")).strip()
+            if s_col:
+                try:
+                    score_map[d_name] = float(r.get(s_col, 100.0))
+                except Exception:
+                    score_map[d_name] = 100.0
+
+    # Attach score to df temporarily for sorting priority
+    df["__temp_score"] = df["Driver Name"].astype(str).str.strip().str.lower().map(score_map).fillna(100.0)
+    df = df.sort_values(by="__temp_score", ascending=False).reset_index(drop=True)
 
     front_half_indices = [0, 1, 2, 3]  # Sun, Mon, Tue, Wed
     back_half_indices = [3, 4, 5, 6]   # Wed, Thu, Fri, Sat
@@ -183,6 +196,12 @@ def auto_generate_pattern_weekly_schedule(schedule_df, day_headers, expected_rou
             if day_current_count < day_target:
                 df.at[idx, dh] = "Driver"
                 current_shifts += 1
+
+    # Drop temporary score column and resort alphabetically by name for clean display
+    df = df.drop(columns=["__temp_score"], errors="ignore")
+    sort_cols = [c for c in ["First Name", "Last Name", "Driver Name"] if c in df.columns]
+    if sort_cols:
+        df = df.sort_values(by=sort_cols, ascending=True).reset_index(drop=True)
 
     return df
 
