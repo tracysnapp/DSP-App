@@ -75,7 +75,8 @@ def run_auto_assignment(routes_df, vans_df, phones_df=None):
     routes['van_priority'] = routes.apply(get_van_priority_score, axis=1)
     routes = routes.sort_values(by=['van_priority', route_code_col], ascending=[True, True]).reset_index(drop=True)
 
-    active_mask = vans_df['status_clean'].isin(['UP', 'ACTIVE', 'OPERATIONAL', 'WORKABLE', 'AVAILABLE'])
+    status_col_name = next((c for c in vans_df.columns if str(c).strip().lower() in ['status', 'status_clean']), 'Status')
+    active_mask = vans_df[status_col_name].astype(str).str.strip().str.upper().isin(['UP', 'ACTIVE', 'OPERATIONAL', 'WORKABLE', 'AVAILABLE']) if status_col_name in vans_df.columns else [True] * len(vans_df)
     available_vans = vans_df[active_mask].copy()
     
     # SORT FLEET BY PRIORITY_RANK IF PRESENT
@@ -117,20 +118,23 @@ def run_auto_assignment(routes_df, vans_df, phones_df=None):
         matched_van = None
         matched_code_used = None
         
+        st_bracket_col = next((c for c in available_vans.columns if str(c).strip().lower() in ['size bracket', 'st', 'servicetype']), 'Size Bracket')
+        vin_col = next((c for c in available_vans.columns if str(c).strip().lower() in ['vin', 'vin_clean']), 'VIN')
+
         for code in priority_list:
-            matches = available_vans[available_vans['serviceType_clean'] == code]
+            matches = available_vans[available_vans[st_bracket_col].astype(str).str.strip().str.upper() == code]
             if not matches.empty:
                 matched_van = matches.iloc[0]
                 matched_code_used = code
                 break
         
         if matched_van is not None:
-            bumper_raw = matched_van.get('Bumper #', matched_van.get('vehicleName', 'UNNAMED'))
+            bumper_raw = matched_van.get('Van Bumper', matched_van.get('vehicleName', 'UNNAMED'))
             bumper_no = str(bumper_raw).strip()
             if bumper_no.endswith('.0'):
                 bumper_no = bumper_no[:-2]
-            selected_st = str(matched_van.get('ST', matched_code_used)).strip()
-            chosen_vin = str(matched_van.get('vin_clean', '')).strip()
+            selected_st = str(matched_van.get(st_bracket_col, matched_code_used)).strip()
+            chosen_vin = str(matched_van.get(vin_col, '')).strip()
             
             is_priority_forced = matched_van.get('priority_rank', 10) == 1
             if is_priority_forced:
@@ -140,7 +144,7 @@ def run_auto_assignment(routes_df, vans_df, phones_df=None):
             else:
                 remarks = ''
 
-            available_vans = available_vans[available_vans['vin_clean'] != chosen_vin]
+            available_vans = available_vans[available_vans[vin_col] != chosen_vin]
         else:
             bumper_no = 'UNASSIGNED'
             selected_st = 'N/A'
@@ -194,8 +198,9 @@ def calculate_ops_metrics(roster_df, fleet_df):
         return {}
 
     total_routes = len(roster_df)
-    active_fleet = len(fleet_df[fleet_df['status_clean'].isin(['UP', 'ACTIVE', 'OPERATIONAL', 'WORKABLE', 'AVAILABLE'])]) if fleet_df is not None else 0
-    grounded_fleet = len(fleet_df[fleet_df['status_clean'] == 'DOWN']) if fleet_df is not None else 0
+    status_col_name = next((c for c in fleet_df.columns if str(c).strip().lower() in ['status', 'status_clean']), 'Status') if fleet_df is not None else 'Status'
+    active_fleet = len(fleet_df[fleet_df[status_col_name].astype(str).str.strip().str.upper().isin(['UP', 'ACTIVE', 'OPERATIONAL', 'WORKABLE', 'AVAILABLE'])]) if fleet_df is not None and status_col_name in fleet_df.columns else 0
+    grounded_fleet = len(fleet_df[fleet_df[status_col_name].astype(str).str.strip().str.upper() == 'DOWN']) if fleet_df is not None and status_col_name in fleet_df.columns else 0
 
     fallback_count = len(roster_df[roster_df['Remarks'].str.contains('FALLBACK', case=False, na=False)])
     unassigned_count = len(roster_df[roster_df['Van Bumper'] == 'UNASSIGNED'])
@@ -251,7 +256,6 @@ def update_closing_checklist_assignments(roster_df, session_state):
     for col in default_cols:
         merged_closing[col] = merged_closing[col].fillna("") if col in merged_closing.columns else ""
 
-    # FIXED: Added secondary string fallback to cleanly sort non-numeric/rental van names
     merged_closing['van_num_sort'] = pd.to_numeric(merged_closing['Van'].astype(str).str.extract(r'(\d+)', expand=False), errors='coerce').fillna(999999)
     merged_closing['is_helper'] = merged_closing['Driver Name'].str.contains(r'\(Helper\)', case=False, na=False)
     merged_closing = merged_closing.sort_values(by=['van_num_sort', 'Van', 'is_helper', 'Driver Name'], ascending=[True, True, True, True])
@@ -261,7 +265,6 @@ def get_sorted_roster(df):
     if df is None or df.empty:
         return df
     sorted_df = df.copy()
-    # FIXED: Used format='mixed' so non-standard wave string inputs parse cleanly
     sorted_df['wave_dt'] = pd.to_datetime(sorted_df['Wave'], format='mixed', errors='coerce')
     sorted_df['first_name'] = sorted_df['Driver'].astype(str).str.strip().str.split().str[0].str.upper()
     return sorted_df.sort_values(by=['wave_dt', 'first_name'], ascending=[True, True], na_position='last').drop(columns=['wave_dt', 'first_name']).reset_index(drop=True)
