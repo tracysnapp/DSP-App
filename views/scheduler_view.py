@@ -15,10 +15,6 @@ LONG_RANGE_PTO_PATH = "data/long_range_pto.csv"
 
 
 def get_amazon_week_1_start(year: int) -> datetime:
-  """Returns the Sunday start date of Amazon Week 1 for a given operating year.
-  
-  Amazon Operating Years start on the Sunday of the week containing Jan 1st/4th.
-  """
   if year == 2027:
     return datetime(2027, 1, 3)
   elif year == 2026:
@@ -29,14 +25,12 @@ def get_amazon_week_1_start(year: int) -> datetime:
 
 
 def get_amazon_week_dates(year: int, week_num: int):
-  """Calculates the 7 days (Sunday through Saturday) for a given Amazon week number."""
   week_1_sun = get_amazon_week_1_start(year)
   target_sun = week_1_sun + timedelta(weeks=week_num - 1)
   return [target_sun + timedelta(days=i) for i in range(7)]
 
 
 def get_current_amazon_week_info():
-  """Returns (current_year, current_amazon_week_num) for today's date."""
   today = datetime.today()
   current_year = today.year
 
@@ -168,7 +162,6 @@ def render_scheduler_tab():
       pto_data = st.session_state["pto_df"]
 
       if loaded_sch.empty and drivers_df is not None and not drivers_df.empty:
-        # Filter strictly for ACTIVE drivers only
         active_drivers = drivers_df[
             drivers_df["Status"].astype(str).str.strip().str.upper() == "ACTIVE"
         ].copy() if "Status" in drivers_df.columns else drivers_df.copy()
@@ -192,7 +185,7 @@ def render_scheduler_tab():
               "Notes / Requests": "",
           }
           for dh in day_headers:
-            driver_row[dh] = "Off"
+            driver_row[dh] = ""
 
           init_sch.append(driver_row)
 
@@ -200,7 +193,6 @@ def render_scheduler_tab():
       else:
         sch_df = loaded_sch.copy()
         
-        # Also clean loaded schedule against active driver directory if available
         if drivers_df is not None and not drivers_df.empty and "Status" in drivers_df.columns:
           active_names = set(
               drivers_df[drivers_df["Status"].astype(str).str.strip().str.upper() == "ACTIVE"]["Driver Name"]
@@ -240,6 +232,12 @@ def render_scheduler_tab():
               + " "
               + sch_df["Last Name"].astype(str)
           ).str.strip()
+
+      # Sanitize any "none", "nan", or None values in shift columns to blank ""
+      for dh in day_headers:
+        if dh in sch_df.columns:
+          sch_df[dh] = sch_df[dh].fillna("").astype(str)
+          sch_df.loc[sch_df[dh].str.strip().str.lower().isin(["none", "nan", "nat", "<na>"]), dh] = ""
 
       if not pto_data.empty and not sch_df.empty:
         for idx, d_row in sch_df.iterrows():
@@ -332,7 +330,8 @@ def render_scheduler_tab():
         for row_idx, col_changes in changes.get("edited_rows", {}).items():
           for col_name, new_val in col_changes.items():
             if col_name in st.session_state["schedule_df"].columns:
-              st.session_state["schedule_df"].at[row_idx, col_name] = new_val
+              clean_val = "" if new_val is None or str(new_val).strip().lower() in ["none", "nan", "nat"] else str(new_val).strip()
+              st.session_state["schedule_df"].at[row_idx, col_name] = clean_val
 
     st.markdown("### 📊 Live Coverage vs. Station Targets")
     metrics_cols = st.columns(7)
@@ -373,7 +372,7 @@ def render_scheduler_tab():
       with b_col2:
         bulk_sel_shift = st.selectbox(
             "Assign Shift Type",
-            options=["Driver", "Helper", "On-Call", "Off", "OPS-AM", "OPS-PM", "Rqst Off"],
+            options=["", "Driver", "Helper", "On-Call", "Off", "OPS-AM", "OPS-PM", "Rqst Off"],
             key="bulk_shift_sel"
         )
         
@@ -384,14 +383,12 @@ def render_scheduler_tab():
           st.warning("Please select at least one day.")
         else:
           sch_df_ref = st.session_state["schedule_df"]
-          updated_count = 0
           for idx, row in sch_df_ref.iterrows():
             d_name = str(row.get("Driver Name", "")).strip()
             if d_name in bulk_sel_drivers:
               for d_day in bulk_sel_days:
                 if d_day in sch_df_ref.columns:
                   sch_df_ref.at[idx, d_day] = bulk_sel_shift
-                  updated_count += 1
           
           st.session_state["schedule_df"] = sch_df_ref.copy()
           log_dispatch_action(f"Bulk assigned shift '{bulk_sel_shift}' for {len(bulk_sel_drivers)} drivers across {len(bulk_sel_days)} days.", username=active_user)
@@ -413,11 +410,12 @@ def render_scheduler_tab():
     df_display = df_display[display_cols]
 
     st.caption(
-        "Assign shift options. Long-range requests are auto-populated as 'Rqst"
-        " Off' with notes pulled from your calendar."
+        "Assign shift options. Leave cells blank if available but not scheduled. Long-range requests are auto-populated as 'Rqst Off'."
     )
 
+    # Added "" (blank option) at the beginning of shift options
     shift_options = [
+        "",
         "Driver",
         "Helper",
         "On-Call",
@@ -441,10 +439,9 @@ def render_scheduler_tab():
     }
     for dh in day_headers:
       sch_config[dh] = st.column_config.SelectboxColumn(
-          dh, options=shift_options, required=True
+          dh, options=shift_options, required=False
       )
 
-    # Render data editor expanded to fill container width with calculated height for maximum workspace visibility
     editor_height = min(max(350, len(df_display) * 38 + 50), 750)
     st.data_editor(
         df_display,
@@ -470,9 +467,6 @@ def render_scheduler_tab():
 
     st.markdown("---")
     
-    # ==========================================
-    # DISCORD ANNOUNCEMENT (BUTTON ONLY)
-    # ==========================================
     st.subheader("📢 Discord Announcement Broadcast (#weekly-schedule)")
     discord_text = generate_discord_schedule(
         st.session_state["schedule_df"], week_str=week_label
