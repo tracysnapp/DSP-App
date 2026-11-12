@@ -242,13 +242,11 @@ def render_scheduler_tab():
             sch_df["__dn_lower"] = sch_df["Driver Name"].astype(str).str.strip().str.lower()
             sch_df = sch_df[sch_df["__dn_lower"].isin(active_names)].drop(columns=["__dn_lower"]).reset_index(drop=True)
 
-        # Map legacy or date headers to current week's exact day headers
         for d_key, d_header in day_key_to_header.items():
           if d_header not in sch_df.columns:
             if d_key in sch_df.columns:
               sch_df.rename(columns={d_key: d_header}, inplace=True)
             else:
-              # Check if any old date header matches this day of week key
               matching_old_col = next((c for c in sch_df.columns if c.startswith(d_key)), None)
               if matching_old_col:
                 sch_df.rename(columns={matching_old_col: d_header}, inplace=True)
@@ -400,7 +398,56 @@ def render_scheduler_tab():
       metrics_cols[i].metric(label=d_header, value=driver_count, delta=delta)
 
     st.markdown("---")
+
+    # ==========================================
+    # D: CONSOLIDATED CONFLICT ALERT BANNER
+    # ==========================================
+    conflict_count = 0
+    conflict_details = []
+    if "schedule_df" in st.session_state and not st.session_state["schedule_df"].empty:
+      sch_check = st.session_state["schedule_df"]
+      for _, r_item in sch_check.iterrows():
+        notes_str = str(r_item.get("Notes / Requests", ""))
+        if notes_str and notes_str != "nan":
+          # Check if any scheduled work shift overlaps with an approved PTO/constraint note
+          d_name = r_item.get("Driver Name", "Driver")
+          for dh in day_headers:
+            shift_val = str(r_item.get(dh, "")).strip()
+            if shift_val in work_shifts:
+              # If working on a day that has a constraint note
+              conflict_count += 1
+              conflict_details.append(f"• **{d_name}** scheduled on **{dh}** despite active calendar constraint: *{notes_str[:60]}...*")
+
+    if conflict_count > 0:
+      with st.expander(f"⚠️ **Schedule Conflict Alert: {conflict_count} potential overlap(s) detected with calendar constraints**", expanded=True):
+        st.warning("Review the drivers scheduled below who have active long-range PTO or availability notes for the week:")
+        for cd in conflict_details[:5]:  # Show top 5
+          st.markdown(cd)
+        if len(conflict_details) > 5:
+          st.caption(f"...and {len(conflict_details) - 5} more conflicts.")
     
+    # ==========================================
+    # C: ROLE & AVAILABILITY FILTER TOGGLES
+    # ==========================================
+    f_col1, f_col2 = st.columns([2, 2])
+    with f_col1:
+      schedule_view_filter = st.selectbox(
+          "🔍 Filter Schedule View",
+          options=[
+              "Show All Active Drivers",
+              "Show Scheduled Only (Drivers/Helpers/OPS)",
+              "Show Available / Unscheduled Only",
+              "Show with Calendar Notes / Requests",
+          ],
+          key="sched_view_filter_sel"
+      )
+    with f_col2:
+      day_quick_focus = st.selectbox(
+          "📅 Highlight Specific Day Column",
+          options=["None (Show All Days)"] + day_headers,
+          key="sched_day_focus_sel"
+      )
+
     # ==========================================
     # BULK MULTI-DRIVER SHIFT ASSIGNMENT TOOL
     # ==========================================
@@ -450,7 +497,19 @@ def render_scheduler_tab():
         work_shifts
     ).sum(axis=1)
 
+    # Apply C filters
+    if schedule_view_filter == "Show Scheduled Only (Drivers/Helpers/OPS)":
+      df_display = df_display[df_display["Total Days"] > 0]
+    elif schedule_view_filter == "Show Available / Unscheduled Only":
+      df_display = df_display[df_display["Total Days"] == 0]
+    elif schedule_view_filter == "Show with Calendar Notes / Requests":
+      df_display = df_display[df_display["Notes / Requests"].astype(str).str.strip() != ""]
+
     display_cols = ["Driver Name"] + existing_day_cols
+    if day_quick_focus != "None (Show All Days)" and day_quick_focus in existing_day_cols:
+      # Focus view: Put Driver Name, Notes, and the selected day first/prominent
+      display_cols = ["Driver Name", day_quick_focus] + [c for c in existing_day_cols if c != day_quick_focus]
+
     if "Total Days" in df_display.columns:
       display_cols.append("Total Days")
     if "Notes / Requests" in df_display.columns:
@@ -486,9 +545,10 @@ def render_scheduler_tab():
         ),
     }
     for dh in day_headers:
-      sch_config[dh] = st.column_config.SelectboxColumn(
-          dh, options=shift_options, required=False
-      )
+      if dh in display_cols:
+        sch_config[dh] = st.column_config.SelectboxColumn(
+            dh, options=shift_options, required=False
+        )
 
     editor_height = min(max(350, len(df_display) * 38 + 50), 750)
     st.data_editor(
@@ -684,3 +744,31 @@ def render_scheduler_tab():
         key="pto_editor_state",
         on_change=on_pto_change,
     )
+
+    c_p1, c_p2 = st.columns(2)
+    with c_p1:
+      if st.button(
+          "💾 Save Long-Range Calendar to Disk",
+          type="primary",
+          key="save_pto_disk",
+      ):
+        for col in edited_pto_df.columns:
+          edited_pto_df[col] = (
+              edited_pto_df[col].astype(str).replace("nan", "")
+          )
+
+        os.makedirs(os.path.dirname(LONG_RANGE_PTO_PATH), exist_ok=True)
+        edited_pto_df.to_csv(LONG_RANGE_PTO_PATH, index=False)
+        st.session_state["pto_df"] = edited_pto_df.copy()
+
+        if "schedule_df" in st.session_state:
+          del st.session_state["schedule_df"]
+        if "loaded_week_num" in st.session_state:
+          del st.session_state["loaded_week_num"]
+
+        log_dispatch_action(
+            "Updated long-range PTO calendar database.", username=active_user
+        )
+        st.success(
+            "Long-range calendar saved and weekly schedule synchronized!"
+        )
