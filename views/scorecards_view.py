@@ -13,9 +13,13 @@ from engine import (
     SCORECARDS_PATH, 
     log_dispatch_action, 
     load_local_incidents_log, 
+    load_local_rescues_log,
     save_driver_incident,
     update_driver_incident,
-    delete_driver_incident
+    delete_driver_incident,
+    save_driver_rescue,
+    update_driver_rescue,
+    delete_driver_rescue
 )
 
 def render_scorecards_tab():
@@ -26,11 +30,12 @@ def render_scorecards_tab():
     fleet_df = st.session_state.get('fleet_df')
     active_user = st.session_state.get('user_name', 'Admin')
 
-    tab_calc, tab_weekly, tab_driver_trend, tab_incidents, tab_ledger, tab_career = st.tabs([
+    tab_calc, tab_weekly, tab_driver_trend, tab_incidents, tab_rescues, tab_ledger, tab_career = st.tabs([
         "📥 Batch Weekly Ingestion & DQI Calculator",
         "📊 Weekly Performance Leaderboard",
         "📈 Individual Driver Scorecard & Trends",
-        "🚨 Driver Incident & Behavior Tracker",
+        "🚨 Driver Incident Tracker",
+        "🚚 Rescue & Sweep Tracker",
         "📜 Master Scorecards Ledger",
         "🥇 All-Time Career Leaderboard"
     ])
@@ -111,7 +116,7 @@ def render_scorecards_tab():
                 medals = ["🥇 1st", "🥈 2nd", "🥉 3rd"]
                 weekly_df['Rank'] = [medals[i] if i < len(medals) else f"#{i+1}" for i in range(len(weekly_df))]
 
-                disp_cols = ['Rank', 'Driver Name', score_col, 'Overall Standing', 'Packages Delivered', 'Recognition_Eligible', 'Ineligibility_Reason', 'FICO']
+                disp_cols = ['Rank', 'Driver Name', score_col, 'Overall Standing', 'Packages Delivered', 'Times Rescued', 'Rescues Performed', 'Recognition_Eligible', 'FICO']
                 valid_cols = [c for c in disp_cols if c in weekly_df.columns]
 
                 st.dataframe(weekly_df[valid_cols], use_container_width=True, hide_index=True)
@@ -155,19 +160,13 @@ def render_scorecards_tab():
                     m_col2.metric("Most Recent DQI", f"{metrics['recent_score']}", delta=f"{metrics['trend_delta']} vs prev week")
                     m_col3.metric("Peak DQI Score", f"{metrics['max_dqi']}")
                     m_col4.metric("Lifetime Packages", f"{metrics['lifetime_packages']:,}")
-                    m_col5.metric("Safety/Behavior Incidents", f"{metrics['incident_count']}")
+                    m_col5.metric("Safety Incidents", f"{metrics['incident_count']}")
 
                     st.markdown("#### 📉 Week-Over-Week DQI Trend Line")
                     score_col = 'Unified_Composite_Score' if 'Unified_Composite_Score' in driver_history_df.columns else 'Overall Score'
                     
                     chart_data = driver_history_df.set_index('Week')[[score_col]].rename(columns={score_col: "DQI Score"})
                     st.line_chart(chart_data)
-
-                    st.markdown("#### 🚨 Safety & Driving Behavior Incidents Log")
-                    if not driver_incidents_df.empty:
-                        st.dataframe(driver_incidents_df, use_container_width=True, hide_index=True)
-                    else:
-                        st.success("Clean safety record! No driving or behavior incidents logged for this driver.")
 
                     st.markdown("#### 📜 Historical Weekly Breakdown")
                     st.dataframe(driver_history_df, use_container_width=True, hide_index=True)
@@ -177,12 +176,10 @@ def render_scorecards_tab():
             st.info("No historical scorecard records found in `master_scorecards.xlsx`.")
 
     # ---------------------------------------------------------
-    # TAB 4: DRIVER INCIDENT & BEHAVIOR TRACKER
+    # TAB 4: DRIVER INCIDENT TRACKER
     # ---------------------------------------------------------
     with tab_incidents:
         st.markdown("#### 🚨 Driver Incident & Behavior Log")
-        st.caption("Record on-pad or on-road safety violations, vehicle damage, unprofessional behavior, or complaints. Edit or delete existing entries below.")
-
         incidents_df = load_local_incidents_log()
 
         with st.expander("➕ Log New Driving or Behavior Incident", expanded=False):
@@ -197,45 +194,27 @@ def render_scorecards_tab():
             inc_driver = col_in1.selectbox("Driver Associate*", options=driver_options if driver_options else ["Select Driver..."], key="inc_d_name")
             inc_severity = col_in2.selectbox("Severity Level*", options=["Minor (Coaching Required)", "Moderate (Written Warning)", "Severe (Final Warning)", "Critical (Suspension / Termination)"], key="inc_sev")
             
-            inc_category = col_in3.selectbox("Incident Category*", options=[
-                "Pad/Parking Lot Safety",
-                "Reckless Driving",
-                "Damage to Vehicle",
-                "Left Trash In Van",
-                "Unprofessional Behavior / Attitude",
-                "Customer Complaint",
-                "Property Damage",
-                "Uniform Violation",
-                "Route Refusal/Package Abandonment",
-                "Gross Insubordination",
-                "Other"
+            inc_category = col_in3.selectbox("Incident Category*", [
+                "Pad/Parking Lot Safety", "Reckless Driving", "Damage to Vehicle", "Left Trash In Van",
+                "Unprofessional Behavior / Attitude", "Customer Complaint", "Property Damage",
+                "Uniform Violation", "Route Refusal/Package Abandonment", "Gross Insubordination", "Other"
             ], key="inc_cat")
 
             col_in4, col_in5 = st.columns(2)
-            
             van_list = ["N/A"]
             if fleet_df is not None and not fleet_df.empty and 'vehicleName' in fleet_df.columns:
                 van_list += sorted(fleet_df['vehicleName'].astype(str).str.strip().unique())
 
             inc_van = col_in4.selectbox("Associated Van Bumper (Optional)", options=van_list, key="inc_van_sel")
-            inc_detail = col_in5.text_input("Short Infraction Summary*", placeholder="e.g. Copped an attitude with dispatcher over dispatch phone", key="inc_detail_input")
-            
-            inc_notes = st.text_area("Detailed Action Taken / Management Notes", placeholder="e.g. Addressed attitude on dispatch line; issued formal warning.", key="inc_notes_input")
+            inc_detail = col_in5.text_input("Short Infraction Summary*", placeholder="e.g. Copped an attitude with dispatcher", key="inc_detail_input")
+            inc_notes = st.text_area("Detailed Action Taken / Notes", placeholder="e.g. Addressed attitude on dispatch line.", key="inc_notes_input")
 
             if st.button("🚨 Record Incident to Master Log", type="primary"):
                 if not inc_driver or inc_driver == "Select Driver..." or not inc_detail.strip():
                     st.warning("Please select a valid driver and enter an infraction summary.")
                 else:
-                    save_driver_incident(
-                        driver_name=inc_driver,
-                        severity=inc_severity,
-                        category=inc_category,
-                        infraction_detail=inc_detail,
-                        van_bumper=inc_van,
-                        logged_by=active_user,
-                        notes=inc_notes
-                    )
-                    log_dispatch_action(f"Logged safety incident for driver '{inc_driver}' ({inc_category} - {inc_severity}).", username=active_user)
+                    save_driver_incident(inc_driver, inc_severity, inc_category, inc_detail, inc_van, active_user, inc_notes)
+                    log_dispatch_action(f"Logged safety incident for driver '{inc_driver}' ({inc_category}).", username=active_user)
                     st.toast(f"Logged incident for {inc_driver}!", icon="🚨")
                     st.rerun()
 
@@ -254,14 +233,12 @@ def render_scorecards_tab():
 
                 with st.form("edit_incident_form"):
                     st.markdown(f"**Editing Incident Index #{match_idx}** (Logged: {row_data.get('Date', '')})")
-                    
                     e_col1, e_col2, e_col3 = st.columns(3)
                     e_driver = e_col1.text_input("Driver Name", value=str(row_data.get('Driver Name', '')))
                     
                     sev_options = ["Minor (Coaching Required)", "Moderate (Written Warning)", "Severe (Final Warning)", "Critical (Suspension / Termination)"]
                     current_sev = str(row_data.get('Severity', ''))
-                    sev_idx = sev_options.index(current_sev) if current_sev in sev_options else 0
-                    e_severity = e_col2.selectbox("Severity Level", options=sev_options, index=sev_idx)
+                    e_severity = e_col2.selectbox("Severity Level", options=sev_options, index=sev_options.index(current_sev) if current_sev in sev_options else 0)
 
                     cat_options = [
                         "Pad/Parking Lot Safety", "Reckless Driving", "Damage to Vehicle", "Left Trash In Van",
@@ -269,8 +246,7 @@ def render_scorecards_tab():
                         "Uniform Violation", "Route Refusal/Package Abandonment", "Gross Insubordination", "Other"
                     ]
                     current_cat = str(row_data.get('Category', ''))
-                    cat_idx = cat_options.index(current_cat) if current_cat in cat_options else 0
-                    e_category = e_col3.selectbox("Incident Category", options=cat_options, index=cat_idx)
+                    e_category = e_col3.selectbox("Incident Category", options=cat_options, index=cat_options.index(current_cat) if current_cat in cat_options else 0)
 
                     e_col4, e_col5 = st.columns(2)
                     e_van = e_col4.text_input("Van Bumper", value=str(row_data.get('Van Bumper', 'N/A')))
@@ -278,40 +254,119 @@ def render_scorecards_tab():
                     e_notes = st.text_area("Notes / Action Taken", value=str(row_data.get('Notes', '')))
 
                     col_btn1, col_btn2 = st.columns(2)
-                    submit_edit = col_btn1.form_submit_button("💾 Save Changes", type="primary", use_container_width=True)
-                    submit_delete = col_btn2.form_submit_button("🗑️ Delete Incident Record", type="secondary", use_container_width=True)
-
-                    if submit_edit:
-                        update_driver_incident(
-                            row_idx=match_idx,
-                            driver_name=e_driver,
-                            severity=e_severity,
-                            category=e_category,
-                            infraction_detail=e_detail,
-                            van_bumper=e_van,
-                            logged_by=active_user,
-                            notes=e_notes
-                        )
-                        log_dispatch_action(f"Updated incident record for '{e_driver}' (Index #{match_idx}).", username=active_user)
-                        st.success("Incident record updated successfully!")
+                    if col_btn1.form_submit_button("💾 Save Changes", type="primary", use_container_width=True):
+                        update_driver_incident(match_idx, e_driver, e_severity, e_category, e_detail, e_van, active_user, e_notes)
+                        st.success("Incident updated successfully!")
                         st.rerun()
-
-                    if submit_delete:
+                    if col_btn2.form_submit_button("🗑️ Delete Incident", type="secondary", use_container_width=True):
                         delete_driver_incident(match_idx)
-                        log_dispatch_action(f"Deleted incident record index #{match_idx}.", username=active_user)
-                        st.success("Incident record deleted successfully!")
+                        st.success("Incident deleted successfully!")
                         st.rerun()
 
         st.markdown("---")
-        st.markdown("#### 📜 Master Incident & Behavior Log Ledger")
+        st.markdown("#### 📜 Master Incident Log Ledger")
         if incidents_df is not None and not incidents_df.empty:
-            display_inc_df = incidents_df.drop(columns=['Display_Label'], errors='ignore')
-            st.dataframe(display_inc_df, use_container_width=True, hide_index=True)
+            st.dataframe(incidents_df.drop(columns=['Display_Label'], errors='ignore'), use_container_width=True, hide_index=True)
         else:
             st.info("No driving or behavior incidents currently recorded.")
 
     # ---------------------------------------------------------
-    # TAB 5: MASTER SCORECARDS LEDGER
+    # TAB 5: RESCUE & SWEEP TRACKER
+    # ---------------------------------------------------------
+    with tab_rescues:
+        st.markdown("#### 🚚 Rescue & Sweep Dispatch Tracker")
+        st.caption("Log rescues. Rescues due to being behind on route deducts 5 pts. Sweeps/rescues performed after finishing routes grant +5 pts bonus.")
+
+        rescues_df = load_local_rescues_log()
+
+        with st.expander("➕ Log New Rescue Dispatch", expanded=False):
+            col_r1, col_r2, col_r3 = st.columns(3)
+            
+            driver_options = []
+            if drivers_df is not None and not drivers_df.empty and 'Driver Name' in drivers_df.columns:
+                driver_options = sorted(drivers_df['Driver Name'].dropna().unique())
+            elif scorecards_df is not None and not scorecards_df.empty and 'Driver Name' in scorecards_df.columns:
+                driver_options = sorted(scorecards_df['Driver Name'].dropna().unique())
+
+            r_driver = col_r1.selectbox("Driver Rescued (Behind on Route)*", options=driver_options if driver_options else ["Select Driver..."], key="res_rescued_sel")
+            r_rescuer = col_r2.selectbox("Rescuer / Sweeper Driver (Performed Rescue)*", options=driver_options if driver_options else ["Select Driver..."], key="res_rescuer_sel")
+            
+            r_reason = col_r3.selectbox("Rescue Reason*", options=[
+                "Behind on Route / Slow Pace",
+                "Vehicle Breakdown / Swap",
+                "App / Navigation Glitch",
+                "Safety / Medical / Personal",
+                "Other"
+            ], key="res_reason_sel")
+
+            col_r4, col_r5 = st.columns(2)
+            r_notes = col_r4.text_input("Dispatch Notes / Package Count", placeholder="e.g. Swiped 35 stops to help catch up", key="res_notes_input")
+
+            if st.button("🚚 Record Rescue Dispatch", type="primary"):
+                if not r_driver or r_driver == "Select Driver..." or not r_rescuer or r_rescuer == "Select Driver...":
+                    st.warning("Please select both the rescued driver and the rescuer.")
+                elif r_driver == r_rescuer:
+                    st.warning("A driver cannot rescue themselves.")
+                else:
+                    save_driver_rescue(
+                        rescued_driver=r_driver,
+                        rescuer_driver=r_rescuer,
+                        reason=r_reason,
+                        logged_by=active_user,
+                        notes=r_notes
+                    )
+                    log_dispatch_action(f"Logged rescue: '{r_rescuer}' rescued '{r_driver}' ({r_reason}).", username=active_user)
+                    st.toast(f"Logged rescue for {r_driver}!", icon="🚚")
+                    st.rerun()
+
+        st.markdown("---")
+        st.markdown("#### ✏️ Edit or Delete Existing Rescue Records")
+        if rescues_df is not None and not rescues_df.empty:
+            rescues_df['Display_Label'] = [
+                f"[{row.get('Date', '')}] Rescued: {row.get('Rescued Driver', '')} | Rescuer: {row.get('Rescuer Driver', '')} ({row.get('Reason', '')})"
+                for _, row in rescues_df.iterrows()
+            ]
+            selected_rescue_label = st.selectbox("Select Rescue Record to Modify", options=["Select Record..."] + list(rescues_df['Display_Label']))
+
+            if selected_rescue_label != "Select Record...":
+                match_r_idx = rescues_df[rescues_df['Display_Label'] == selected_rescue_label].index[0]
+                r_row_data = rescues_df.loc[match_r_idx]
+
+                with st.form("edit_rescue_form"):
+                    st.markdown(f"**Editing Rescue Index #{match_r_idx}** (Logged: {r_row_data.get('Date', '')})")
+                    
+                    er_col1, er_col2, er_col3 = st.columns(3)
+                    er_rescued = er_col1.text_input("Rescued Driver", value=str(r_row_data.get('Rescued Driver', '')))
+                    er_rescuer = er_col2.text_input("Rescuer Driver", value=str(r_row_data.get('Rescuer Driver', '')))
+                    
+                    reason_opts = [
+                        "Behind on Route / Slow Pace", "Vehicle Breakdown / Swap", 
+                        "App / Navigation Glitch", "Safety / Medical / Personal", "Other"
+                    ]
+                    cur_reason = str(r_row_data.get('Reason', ''))
+                    er_reason = er_col3.selectbox("Reason", options=reason_opts, index=reason_opts.index(cur_reason) if cur_reason in reason_opts else 0)
+
+                    er_notes = st.text_area("Notes", value=str(r_row_data.get('Notes', '')))
+
+                    col_rbtn1, col_rbtn2 = st.columns(2)
+                    if col_rbtn1.form_submit_button("💾 Save Rescue Changes", type="primary", use_container_width=True):
+                        update_driver_rescue(match_r_idx, er_rescued, er_rescuer, er_reason, active_user, er_notes)
+                        st.success("Rescue record updated successfully!")
+                        st.rerun()
+                    if col_rbtn2.form_submit_button("🗑️ Delete Rescue Record", type="secondary", use_container_width=True):
+                        delete_driver_rescue(match_r_idx)
+                        st.success("Rescue record deleted successfully!")
+                        st.rerun()
+
+        st.markdown("---")
+        st.markdown("#### 📜 Master Rescue Dispatch Ledger")
+        if rescues_df is not None and not rescues_df.empty:
+            st.dataframe(rescues_df.drop(columns=['Display_Label'], errors='ignore'), use_container_width=True, hide_index=True)
+        else:
+            st.info("No rescue dispatches currently recorded.")
+
+    # ---------------------------------------------------------
+    # TAB 6: MASTER SCORECARDS LEDGER
     # ---------------------------------------------------------
     with tab_ledger:
         st.markdown("#### 📜 Historical Master Scorecards Ledger")
@@ -325,7 +380,7 @@ def render_scorecards_tab():
             st.info("No historical scorecards loaded. Use Tab 1 to import weekly scorecards.")
 
     # ---------------------------------------------------------
-    # TAB 6: CAREER LEADERBOARD
+    # TAB 7: CAREER LEADERBOARD
     # ---------------------------------------------------------
     with tab_career:
         st.markdown("#### 🥇 All-Time Package-Weighted Career Leaderboard")
