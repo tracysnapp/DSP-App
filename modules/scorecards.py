@@ -1,36 +1,43 @@
-import os
 import re
 import pandas as pd
 from difflib import SequenceMatcher
-from engine import SCORECARDS_PATH, safe_save_dataframe, load_local_incidents_log, load_local_rescues_log, load_dataframe_auto
+from engine import (
+    SCORECARDS_PATH,
+    safe_save_dataframe,
+    load_local_incidents_log,
+    load_local_rescues_log,
+    load_dataframe_auto,
+)
+
 
 def normalize_name(name_str):
     if pd.isna(name_str) or not str(name_str).strip():
         return ""
-    
+
     s = str(name_str).strip().lower()
-    if ',' in s:
-        parts = [p.strip() for p in s.split(',', 1)]
+    if "," in s:
+        parts = [p.strip() for p in s.split(",", 1)]
         if len(parts) == 2:
             s = f"{parts[1]} {parts[0]}"
-            
-    s = re.sub(r'[^a-z\s]', '', s)
+
+    s = re.sub(r"[^a-z\s]", "", s)
     tokens = s.split()
-    
+
     if not tokens:
         return ""
     if len(tokens) == 1:
         return tokens[0]
-        
+
     return f"{tokens[0]} {tokens[-1]}"
 
-def find_best_driver_match(target_key, available_keys, threshold=0.80):
+
+def find_best_driver_match(target_key, available_keys, threshold=0.82):
     if not target_key or not available_keys:
         return None
-    
+
     target_clean = str(target_key).strip().lower()
     target_norm = normalize_name(target_key)
-    
+
     for key in available_keys:
         if target_clean == str(key).strip().lower():
             return key
@@ -41,41 +48,64 @@ def find_best_driver_match(target_key, available_keys, threshold=0.80):
 
     best_match = None
     best_score = 0.0
-    
+
     for key in available_keys:
         score = SequenceMatcher(None, target_clean, str(key).strip().lower()).ratio()
         if score > best_score and score >= threshold:
             best_score = score
             best_match = key
-            
+
     return best_match
 
+
+def _filter_penalized_rescues(matched_rescues_df):
+    """Returns rescues where the rescued driver should receive a -5 pt deduction."""
+    if matched_rescues_df is None or matched_rescues_df.empty:
+        return pd.DataFrame()
+    if "Penalize Rescued" in matched_rescues_df.columns:
+        return matched_rescues_df[
+            matched_rescues_df["Penalize Rescued"].fillna(False).astype(bool)
+        ]
+    return matched_rescues_df[
+        matched_rescues_df["Reason"]
+        .astype(str)
+        .str.lower()
+        .str.contains("behind on route|behind|slow", na=False)
+    ]
+
+
 def get_driver_historical_trend(master_scorecards_df, driver_name):
-    if master_scorecards_df is None or master_scorecards_df.empty or 'Driver Name' not in master_scorecards_df.columns:
+    if master_scorecards_df is None or master_scorecards_df.empty or "Driver Name" not in master_scorecards_df.columns:
         return pd.DataFrame(), {}, pd.DataFrame()
 
     df = master_scorecards_df.copy()
 
-    all_drivers = list(df['Driver Name'].dropna().unique())
-    matched_name = find_best_driver_match(driver_name, all_drivers, threshold=0.80)
-    
+    all_drivers = list(df["Driver Name"].dropna().unique())
+    matched_name = find_best_driver_match(driver_name, all_drivers, threshold=0.82)
+
     if not matched_name:
         return pd.DataFrame(), {}, pd.DataFrame()
 
-    driver_df = df[df['Driver Name'] == matched_name].copy()
+    driver_df = df[df["Driver Name"] == matched_name].copy()
 
-    score_col = 'Unified_Composite_Score' if 'Unified_Composite_Score' in driver_df.columns else 'Overall Score'
+    score_col = "Unified_Composite_Score" if "Unified_Composite_Score" in driver_df.columns else "Overall Score"
 
-    driver_df[score_col] = pd.to_numeric(driver_df[score_col].astype(str).str.replace('%', ''), errors='coerce').fillna(0.0)
-    
-    if 'Week' in driver_df.columns:
-        driver_df = driver_df.sort_values(by='Week', ascending=True).reset_index(drop=True)
+    driver_df[score_col] = pd.to_numeric(
+        driver_df[score_col].astype(str).str.replace("%", ""), errors="coerce"
+    ).fillna(0.0)
 
-    tot_pkgs = pd.to_numeric(driver_df['Packages Delivered'], errors='coerce').sum() if 'Packages Delivered' in driver_df.columns else 0
+    if "Week" in driver_df.columns:
+        driver_df = driver_df.sort_values(by="Week", ascending=True).reset_index(drop=True)
+
+    tot_pkgs = (
+        pd.to_numeric(driver_df["Packages Delivered"], errors="coerce").sum()
+        if "Packages Delivered" in driver_df.columns
+        else 0
+    )
     avg_dqi = driver_df[score_col].mean() if not driver_df.empty else 0.0
     max_dqi = driver_df[score_col].max() if not driver_df.empty else 0.0
     min_dqi = driver_df[score_col].min() if not driver_df.empty else 0.0
-    
+
     recent_score = driver_df[score_col].iloc[-1] if not driver_df.empty else 0.0
     prev_score = driver_df[score_col].iloc[-2] if len(driver_df) > 1 else recent_score
     trend_delta = round(recent_score - prev_score, 2)
@@ -83,11 +113,15 @@ def get_driver_historical_trend(master_scorecards_df, driver_name):
     incidents_df = load_local_incidents_log()
     driver_incidents_df = pd.DataFrame()
     incident_count = 0
-    if incidents_df is not None and not incidents_df.empty and 'Driver Name' in incidents_df.columns:
-        inc_match_keys = list(incidents_df['Driver Name'].dropna().unique())
-        matched_inc_name = find_best_driver_match(matched_name, inc_match_keys, threshold=0.80)
+    if incidents_df is not None and not incidents_df.empty and "Driver Name" in incidents_df.columns:
+        inc_match_keys = list(incidents_df["Driver Name"].dropna().unique())
+        matched_inc_name = find_best_driver_match(matched_name, inc_match_keys, threshold=0.82)
         if matched_inc_name:
-            driver_incidents_df = incidents_df[incidents_df['Driver Name'] == matched_inc_name].sort_values(by='Date', ascending=False).reset_index(drop=True)
+            driver_incidents_df = (
+                incidents_df[incidents_df["Driver Name"] == matched_inc_name]
+                .sort_values(by="Date", ascending=False)
+                .reset_index(drop=True)
+            )
             incident_count = len(driver_incidents_df)
 
     summary = {
@@ -99,12 +133,15 @@ def get_driver_historical_trend(master_scorecards_df, driver_name):
         "recent_score": round(recent_score, 2),
         "trend_delta": trend_delta,
         "lifetime_packages": int(tot_pkgs) if pd.notna(tot_pkgs) else 0,
-        "incident_count": incident_count
+        "incident_count": incident_count,
     }
 
     return driver_df, summary, driver_incidents_df
 
-def calculate_unified_scorecard(overview_file, cdf_file=None, concessions_file=None, rts_file=None, dvic_file=None):
+
+def calculate_unified_scorecard(
+    overview_file, cdf_file=None, concessions_file=None, rts_file=None, dvic_file=None
+):
     if not overview_file:
         raise ValueError("Primary Overview Scorecard file is mandatory.")
 
@@ -112,7 +149,7 @@ def calculate_unified_scorecard(overview_file, cdf_file=None, concessions_file=N
         if file_item is None:
             return None
         if isinstance(file_item, str):
-            return pd.read_csv(file_item) if file_item.endswith('.csv') else pd.read_excel(file_item)
+            return pd.read_csv(file_item) if file_item.endswith(".csv") else pd.read_excel(file_item)
         else:
             try:
                 return pd.read_csv(file_item)
@@ -124,141 +161,211 @@ def calculate_unified_scorecard(overview_file, cdf_file=None, concessions_file=N
     overview_df = load_df(overview_file)
     overview_df.columns = [str(c).strip() for c in overview_df.columns]
 
-    week_col = next((c for c in overview_df.columns if 'week' in c.lower()), overview_df.columns[0])
-    da_col = next((c for c in overview_df.columns if 'associate' in c.lower() or 'driver' in c.lower() or 'name' in c.lower()), overview_df.columns[1])
-    transporter_col = next((c for c in overview_df.columns if 'transporter' in c.lower()), None)
-    score_col = next((c for c in overview_df.columns if 'overall score' in c.lower()), None)
-    standing_col = next((c for c in overview_df.columns if 'overall standing' in c.lower() or 'standing' in c.lower()), None)
-    fico_col = next((c for c in overview_df.columns if 'fico metric' in c.lower() or 'fico score' in c.lower()), None)
-    pkg_col = next((c for c in overview_df.columns if 'packages' in c.lower()), None)
-    pod_col = next((c for c in overview_df.columns if 'pod' in c.lower() and 'tier' not in c.lower() and 'score' not in c.lower() and 'weight' not in c.lower()), None)
+    week_col = next((c for c in overview_df.columns if "week" in c.lower()), overview_df.columns[0])
+    da_col = next(
+        (c for c in overview_df.columns if "associate" in c.lower() or "driver" in c.lower() or "name" in c.lower()),
+        overview_df.columns[1],
+    )
+    transporter_col = next((c for c in overview_df.columns if "transporter" in c.lower()), None)
+    score_col = next((c for c in overview_df.columns if "overall score" in c.lower()), None)
+    standing_col = next(
+        (c for c in overview_df.columns if "overall standing" in c.lower() or "standing" in c.lower()),
+        None,
+    )
+    fico_col = next(
+        (c for c in overview_df.columns if "fico metric" in c.lower() or "fico score" in c.lower()),
+        None,
+    )
+    pkg_col = next((c for c in overview_df.columns if "packages" in c.lower()), None)
+    pod_col = next(
+        (
+            c
+            for c in overview_df.columns
+            if "pod" in c.lower()
+            and "tier" not in c.lower()
+            and "score" not in c.lower()
+            and "weight" not in c.lower()
+        ),
+        None,
+    )
 
     summary = pd.DataFrame()
-    summary['Week'] = overview_df[week_col].astype(str).str.strip()
-    summary['Driver Name'] = overview_df[da_col].astype(str).str.strip().str.replace(r'\s+', ' ', regex=True)
+    summary["Week"] = overview_df[week_col].astype(str).str.strip()
+    summary["Driver Name"] = (
+        overview_df[da_col].astype(str).str.strip().str.replace(r"\s+", " ", regex=True)
+    )
     if transporter_col:
-        summary['Transporter ID'] = overview_df[transporter_col].astype(str).str.strip()
+        summary["Transporter ID"] = overview_df[transporter_col].astype(str).str.strip()
 
-    summary['Overall Score'] = pd.to_numeric(overview_df[score_col].astype(str).str.replace('%', ''), errors='coerce').fillna(0.0).astype(float) if score_col else 0.0
-    summary['Overall Standing'] = overview_df[standing_col].astype(str).str.strip() if standing_col else 'N/A'
-    summary['FICO'] = pd.to_numeric(overview_df[fico_col], errors='coerce').fillna(0.0).astype(float) if fico_col else 0.0
-    summary['Packages Delivered'] = pd.to_numeric(overview_df[pkg_col], errors='coerce').fillna(0).astype(int) if pkg_col else 0
+    summary["Overall Score"] = (
+        pd.to_numeric(overview_df[score_col].astype(str).str.replace("%", ""), errors="coerce")
+        .fillna(0.0)
+        .astype(float)
+        if score_col
+        else 0.0
+    )
+    summary["Overall Standing"] = overview_df[standing_col].astype(str).str.strip() if standing_col else "N/A"
+    summary["FICO"] = pd.to_numeric(overview_df[fico_col], errors="coerce").fillna(0.0).astype(float) if fico_col else 0.0
+    summary["Packages Delivered"] = (
+        pd.to_numeric(overview_df[pkg_col], errors="coerce").fillna(0).astype(int) if pkg_col else 0
+    )
     if pod_col:
-        summary['POD %'] = overview_df[pod_col].astype(str).str.strip()
+        summary["POD %"] = overview_df[pod_col].astype(str).str.strip()
 
     def clean_key(val):
         if pd.isna(val):
             return ""
-        return re.sub(r'\s+', ' ', str(val)).strip().lower()
+        return re.sub(r"\s+", " ", str(val)).strip().lower()
 
-    summary['match_key'] = summary['Driver Name'].apply(clean_key)
-    summary['cdf_penalty'] = 0.0
-    summary['conc_penalty'] = 0.0
-    summary['rts_penalty'] = 0.0
-    summary['dvic_penalty'] = 0.0
-    summary['incident_penalty'] = 0.0
-    summary['rescue_received_penalty'] = 0.0
-    summary['rescue_performed_bonus'] = 0.0
-    summary['Times Rescued'] = 0
-    summary['Rescues Performed'] = 0
-    
-    primary_keys = set(summary['match_key'].unique())
+    summary["match_key"] = summary["Driver Name"].apply(clean_key)
+    summary["cdf_penalty"] = 0.0
+    summary["conc_penalty"] = 0.0
+    summary["rts_penalty"] = 0.0
+    summary["dvic_penalty"] = 0.0
+    summary["incident_penalty"] = 0.0
+    summary["rescue_received_penalty"] = 0.0
+    summary["rescue_performed_bonus"] = 0.0
+    summary["Times Rescued"] = 0
+    summary["Rescues Performed"] = 0
+
+    primary_keys = set(summary["match_key"].unique())
 
     # 2. Customer Delivery Feedback (CDF) Negative Log
     cdf_df = load_df(cdf_file)
     if cdf_df is not None and not cdf_df.empty:
         cdf_df.columns = [str(c).strip() for c in cdf_df.columns]
-        c_name_col = next((c for c in cdf_df.columns if 'associate' in c.lower() or 'driver' in c.lower() or 'name' in c.lower()), cdf_df.columns[0])
-        c_impact_col = next((c for c in cdf_df.columns if 'impact' in c.lower()), None)
-        cdf_df['raw_key'] = cdf_df[c_name_col].apply(clean_key)
+        c_name_col = next(
+            (c for c in cdf_df.columns if "associate" in c.lower() or "driver" in c.lower() or "name" in c.lower()),
+            cdf_df.columns[0],
+        )
+        c_impact_col = next((c for c in cdf_df.columns if "impact" in c.lower()), None)
+        cdf_df["raw_key"] = cdf_df[c_name_col].apply(clean_key)
 
-        for raw_k, group in cdf_df.groupby('raw_key'):
+        for raw_k, group in cdf_df.groupby("raw_key"):
             matched_key = find_best_driver_match(raw_k, primary_keys)
             if matched_key:
-                p = sum(5.0 if (c_impact_col and str(r[c_impact_col]).strip().upper() == 'YES') else 3.0 for _, r in group.iterrows())
-                summary.loc[summary['match_key'] == matched_key, 'cdf_penalty'] += float(p)
+                p = sum(
+                    5.0 if (c_impact_col and str(r[c_impact_col]).strip().upper() == "YES") else 3.0
+                    for _, r in group.iterrows()
+                )
+                summary.loc[summary["match_key"] == matched_key, "cdf_penalty"] += float(p)
 
     # 3. Delivery Concessions / DNRs
     conc_df = load_df(concessions_file)
     if conc_df is not None and not conc_df.empty:
         conc_df.columns = [str(c).strip() for c in conc_df.columns]
-        cn_name_col = next((c for c in conc_df.columns if 'associate' in c.lower() or 'driver' in c.lower() or 'name' in c.lower()), conc_df.columns[0])
-        cn_impact_col = next((c for c in conc_df.columns if 'impact' in c.lower()), None)
-        conc_df['raw_key'] = conc_df[cn_name_col].apply(clean_key)
+        cn_name_col = next(
+            (c for c in conc_df.columns if "associate" in c.lower() or "driver" in c.lower() or "name" in c.lower()),
+            conc_df.columns[0],
+        )
+        cn_impact_col = next((c for c in conc_df.columns if "impact" in c.lower()), None)
+        conc_df["raw_key"] = conc_df[cn_name_col].apply(clean_key)
 
-        for raw_k, group in conc_df.groupby('raw_key'):
+        for raw_k, group in conc_df.groupby("raw_key"):
             matched_key = find_best_driver_match(raw_k, primary_keys)
             if matched_key:
-                p = sum(6.0 if (cn_impact_col and str(r[cn_impact_col]).strip().upper() == 'YES') else 4.0 for _, r in group.iterrows())
-                summary.loc[summary['match_key'] == matched_key, 'conc_penalty'] += float(p)
+                p = sum(
+                    6.0 if (cn_impact_col and str(r[cn_impact_col]).strip().upper() == "YES") else 4.0
+                    for _, r in group.iterrows()
+                )
+                summary.loc[summary["match_key"] == matched_key, "conc_penalty"] += float(p)
 
     # 4. Quality RTS File
     rts_df = load_df(rts_file)
     if rts_df is not None and not rts_df.empty:
         rts_df.columns = [str(c).strip() for c in rts_df.columns]
-        r_name_col = next((c for c in rts_df.columns if 'associate' in c.lower() or 'driver' in c.lower() or 'name' in c.lower()), rts_df.columns[0])
-        r_code_col = next((c for c in rts_df.columns if 'code' in c.lower()), None)
-        r_info_col = next((c for c in rts_df.columns if 'information' in c.lower() or 'additional' in c.lower() or 'contact' in c.lower()), None)
+        r_name_col = next(
+            (c for c in rts_df.columns if "associate" in c.lower() or "driver" in c.lower() or "name" in c.lower()),
+            rts_df.columns[0],
+        )
+        r_code_col = next((c for c in rts_df.columns if "code" in c.lower()), None)
+        r_info_col = next(
+            (
+                c
+                for c in rts_df.columns
+                if "information" in c.lower() or "additional" in c.lower() or "contact" in c.lower()
+            ),
+            None,
+        )
 
         def get_rts_pts(row):
-            code = str(row[r_code_col]).strip() if r_code_col and r_code_col in row else ''
-            info = str(row[r_info_col]).strip() if r_info_col and r_info_col in row and pd.notna(row[r_info_col]) else ''
-            if code == 'NO RTS CODE SELECTED':
+            code = str(row[r_code_col]).strip() if r_code_col and r_code_col in row else ""
+            info = (
+                str(row[r_info_col]).strip()
+                if r_info_col and r_info_col in row and pd.notna(row[r_info_col])
+                else ""
+            )
+            if code == "NO RTS CODE SELECTED":
                 return 3.0
-            if not info or info.lower() in ['nan', 'none', '']:
+            if not info or info.lower() in ["nan", "none", ""]:
                 return 0.0
-            elif 'no after-hours contact' in info.lower():
+            elif "no after-hours contact" in info.lower():
                 return 1.0
-            elif any(term in info.lower() for term in ['no contact attempted', 'no compliant contact', 'text initiated']):
+            elif any(
+                term in info.lower()
+                for term in ["no contact attempted", "no compliant contact", "text initiated"]
+            ):
                 return 2.0
             return 0.0
 
-        rts_df['pts'] = rts_df.apply(get_rts_pts, axis=1)
-        rts_df['raw_key'] = rts_df[r_name_col].apply(clean_key)
+        rts_df["pts"] = rts_df.apply(get_rts_pts, axis=1)
+        rts_df["raw_key"] = rts_df[r_name_col].apply(clean_key)
 
-        for raw_k, group in rts_df.groupby('raw_key'):
+        for raw_k, group in rts_df.groupby("raw_key"):
             matched_key = find_best_driver_match(raw_k, primary_keys)
             if matched_key:
-                summary.loc[summary['match_key'] == matched_key, 'rts_penalty'] += float(group['pts'].sum())
+                summary.loc[summary["match_key"] == matched_key, "rts_penalty"] += float(group["pts"].sum())
 
     # 5. DVIC Pre-Trip Inspection Audit Log
     dvic_df = load_df(dvic_file)
     if dvic_df is not None and not dvic_df.empty:
         dvic_df.columns = [str(c).strip() for c in dvic_df.columns]
-        d_name_col = next((c for c in dvic_df.columns if 'transporter_name' in c.lower() or 'driver' in c.lower() or 'name' in c.lower()), dvic_df.columns[0])
-        d_dur_col = next((c for c in dvic_df.columns if 'duration' in c.lower() or 'time' in c.lower()), None)
+        d_name_col = next(
+            (
+                c
+                for c in dvic_df.columns
+                if "transporter_name" in c.lower() or "driver" in c.lower() or "name" in c.lower()
+            ),
+            dvic_df.columns[0],
+        )
+        d_dur_col = next((c for c in dvic_df.columns if "duration" in c.lower() or "time" in c.lower()), None)
 
         if d_dur_col:
-            dvic_df['raw_key'] = dvic_df[d_name_col].apply(clean_key)
-            dvic_df['is_rushed'] = pd.to_numeric(dvic_df[d_dur_col], errors='coerce').fillna(999) < 90
+            dvic_df["raw_key"] = dvic_df[d_name_col].apply(clean_key)
+            dvic_df["is_rushed"] = pd.to_numeric(dvic_df[d_dur_col], errors="coerce").fillna(999) < 90
 
-            for raw_k, group in dvic_df.groupby('raw_key'):
+            for raw_k, group in dvic_df.groupby("raw_key"):
                 matched_key = find_best_driver_match(raw_k, primary_keys)
                 if matched_key:
-                    rushed_count = group['is_rushed'].sum()
-                    summary.loc[summary['match_key'] == matched_key, 'dvic_penalty'] += float(rushed_count * 5.0)
+                    rushed_count = group["is_rushed"].sum()
+                    summary.loc[summary["match_key"] == matched_key, "dvic_penalty"] += float(rushed_count * 5.0)
 
     # 6. Master Incidents Log Integration & Recognition Ineligibility Rules
     incidents_df = load_local_incidents_log()
-    summary['Recognition_Eligible'] = True
-    summary['Ineligibility_Reason'] = "Eligible"
+    summary["Recognition_Eligible"] = True
+    summary["Ineligibility_Reason"] = "Eligible"
 
-    if incidents_df is not None and not incidents_df.empty and 'Driver Name' in incidents_df.columns and 'Severity' in incidents_df.columns:
-        inc_match_keys = list(incidents_df['Driver Name'].dropna().unique())
-        
+    if (
+        incidents_df is not None
+        and not incidents_df.empty
+        and "Driver Name" in incidents_df.columns
+        and "Severity" in incidents_df.columns
+    ):
+        inc_match_keys = list(incidents_df["Driver Name"].dropna().unique())
+
         for idx, row in summary.iterrows():
-            matched_inc_name = find_best_driver_match(row['Driver Name'], inc_match_keys, threshold=0.80)
+            matched_inc_name = find_best_driver_match(row["Driver Name"], inc_match_keys, threshold=0.82)
             if matched_inc_name:
-                driver_incs = incidents_df[incidents_df['Driver Name'] == matched_inc_name].copy()
-                driver_incs['Parsed_Date'] = pd.to_datetime(driver_incs['Date'], errors='coerce')
-                
+                driver_incs = incidents_df[incidents_df["Driver Name"] == matched_inc_name].copy()
+                driver_incs["Parsed_Date"] = pd.to_datetime(driver_incs["Date"], errors="coerce")
+
                 total_inc_penalty = 0.0
                 ineligible = False
                 reason = "Eligible"
 
                 for _, inc in driver_incs.iterrows():
-                    sev_str = str(inc['Severity']).upper()
-                    
+                    sev_str = str(inc["Severity"]).upper()
+
                     if "MINOR" in sev_str:
                         total_inc_penalty += 3.0
                     elif "MODERATE" in sev_str:
@@ -268,11 +375,11 @@ def calculate_unified_scorecard(overview_file, cdf_file=None, concessions_file=N
                     elif "CRITICAL" in sev_str:
                         total_inc_penalty += 15.0
 
-                    inc_date = inc['Parsed_Date']
+                    inc_date = inc["Parsed_Date"]
                     if pd.notna(inc_date):
                         now = pd.Timestamp.now()
                         diff_days = (now - inc_date).days
-                        
+
                         if "MINOR" in sev_str and diff_days <= 7:
                             ineligible = True
                             reason = "Ineligible: Minor incident within past week"
@@ -290,62 +397,85 @@ def calculate_unified_scorecard(overview_file, cdf_file=None, concessions_file=N
                             ineligible = True
                             reason = "Permanently Ineligible (Critical incident on record)"
 
-                summary.loc[idx, 'incident_penalty'] = total_inc_penalty
+                summary.loc[idx, "incident_penalty"] = total_inc_penalty
                 if ineligible:
-                    summary.loc[idx, 'Recognition_Eligible'] = False
-                    summary.loc[idx, 'Ineligibility_Reason'] = reason
+                    summary.loc[idx, "Recognition_Eligible"] = False
+                    summary.loc[idx, "Ineligibility_Reason"] = reason
 
     # 7. Rescues Log Integration (Times Rescued vs Rescues Performed)
     rescues_df = load_local_rescues_log()
     if rescues_df is not None and not rescues_df.empty:
         for idx, row in summary.iterrows():
-            d_name = row['Driver Name']
-            
-            # Rescues received because behind on route (5 pts penalty per rescue)
-            matched_rescued = rescues_df[rescues_df['Rescued Driver'].apply(lambda x: find_best_driver_match(x, [d_name]) == d_name)]
-            if not matched_rescued.empty:
-                behind_rescues = matched_rescued[matched_rescued['Reason'].astype(str).str.lower().str.contains('behind on route|behind|slow', na=False)]
-                rescue_count = len(behind_rescues)
-                if rescue_count > 0:
-                    summary.loc[idx, 'Times Rescued'] = rescue_count
-                    summary.loc[idx, 'rescue_received_penalty'] = float(rescue_count * 5.0)
+            d_name = row["Driver Name"]
 
-            # Rescues performed: ONLY route drivers who completed their route count & earn +5 pts bonus
-            matched_rescuer = rescues_df[rescues_df['Rescuer Driver'].apply(lambda x: find_best_driver_match(x, [d_name]) == d_name)]
+            matched_rescued = rescues_df[
+                rescues_df["Rescued Driver"].apply(lambda x: find_best_driver_match(x, [d_name]) == d_name)
+            ]
+            if not matched_rescued.empty:
+                penalized_rescues = _filter_penalized_rescues(matched_rescued)
+                rescue_count = len(penalized_rescues)
+                if rescue_count > 0:
+                    summary.loc[idx, "Times Rescued"] = rescue_count
+                    summary.loc[idx, "rescue_received_penalty"] = float(rescue_count * 5.0)
+
+            matched_rescuer = rescues_df[
+                rescues_df["Rescuer Driver"].apply(lambda x: find_best_driver_match(x, [d_name]) == d_name)
+            ]
             if not matched_rescuer.empty:
-                if 'Rescuer Type' in matched_rescuer.columns:
+                if "Rescuer Type" in matched_rescuer.columns:
                     eligible_rescues = matched_rescuer[
-                        ~matched_rescuer['Rescuer Type'].astype(str).str.lower().str.contains('sweeper', na=False)
+                        ~matched_rescuer["Rescuer Type"].astype(str).str.lower().str.contains("sweeper", na=False)
                     ]
                     performed_count = len(eligible_rescues)
                 else:
                     performed_count = len(matched_rescuer)
-                    
+
                 if performed_count > 0:
-                    summary.loc[idx, 'Rescues Performed'] = performed_count
-                    summary.loc[idx, 'rescue_performed_bonus'] = float(performed_count * 5.0)
+                    summary.loc[idx, "Rescues Performed"] = performed_count
+                    summary.loc[idx, "rescue_performed_bonus"] = float(performed_count * 5.0)
 
     # VOLUME EXPOSURE LOAD NORMALIZATION & COMPOSITE SCORING
-    summary['Total_Raw_Penalty'] = summary['cdf_penalty'] + summary['conc_penalty'] + summary['rts_penalty'] + summary['dvic_penalty'] + summary['incident_penalty'] + summary['rescue_received_penalty']
-    
-    mean_team_pkgs = summary['Packages Delivered'].mean()
+    summary["Total_Raw_Penalty"] = (
+        summary["cdf_penalty"]
+        + summary["conc_penalty"]
+        + summary["rts_penalty"]
+        + summary["dvic_penalty"]
+        + summary["incident_penalty"]
+        + summary["rescue_received_penalty"]
+    )
+
+    mean_team_pkgs = summary["Packages Delivered"].mean()
     if mean_team_pkgs <= 0:
         mean_team_pkgs = 1.0
 
-    summary['Volume_Exposure_Factor'] = (mean_team_pkgs / summary['Packages Delivered'].replace(0, mean_team_pkgs)).clip(lower=0.5, upper=1.25)
-    summary['Normalized_Penalty'] = summary['Total_Raw_Penalty'] * summary['Volume_Exposure_Factor']
+    summary["Volume_Exposure_Factor"] = (
+        mean_team_pkgs / summary["Packages Delivered"].replace(0, mean_team_pkgs)
+    ).clip(lower=0.5, upper=1.25)
+    summary["Normalized_Penalty"] = summary["Total_Raw_Penalty"] * summary["Volume_Exposure_Factor"]
 
-    # Granular quality score minus normalized penalty, plus eligible rescue performed bonus points
-    summary['Granular_Quality_Score'] = (100.0 - summary['Normalized_Penalty'] + summary['rescue_performed_bonus']).clip(lower=0.0, upper=100.0)
-    summary['Unified_Composite_Score'] = (0.60 * summary['Overall Score']) + (0.40 * summary['Granular_Quality_Score'])
-    summary['Unified_Composite_Score'] = summary['Unified_Composite_Score'].round(2)
+    summary["Granular_Quality_Score"] = (
+        100.0 - summary["Normalized_Penalty"] + summary["rescue_performed_bonus"]
+    ).clip(lower=0.0, upper=100.0)
+    summary["Unified_Composite_Score"] = (0.60 * summary["Overall Score"]) + (
+        0.40 * summary["Granular_Quality_Score"]
+    )
+    summary["Unified_Composite_Score"] = summary["Unified_Composite_Score"].round(2)
 
     drop_cols = [
-        'match_key', 'cdf_penalty', 'conc_penalty', 'rts_penalty', 'dvic_penalty', 
-        'incident_penalty', 'rescue_received_penalty', 'rescue_performed_bonus', 
-        'Total_Raw_Penalty', 'Volume_Exposure_Factor', 'Normalized_Penalty'
+        "match_key",
+        "cdf_penalty",
+        "conc_penalty",
+        "rts_penalty",
+        "dvic_penalty",
+        "incident_penalty",
+        "rescue_received_penalty",
+        "rescue_performed_bonus",
+        "Total_Raw_Penalty",
+        "Volume_Exposure_Factor",
+        "Normalized_Penalty",
     ]
     return summary.drop(columns=[c for c in drop_cols if c in summary.columns])
+
 
 def append_to_master_scorecards_ledger(new_scorecard_df):
     if new_scorecard_df is None or new_scorecard_df.empty:
@@ -356,7 +486,9 @@ def append_to_master_scorecards_ledger(new_scorecard_df):
     if not existing_df.empty:
         try:
             combined_df = pd.concat([existing_df, new_scorecard_df], ignore_index=True)
-            combined_df = combined_df.drop_duplicates(subset=['Week', 'Driver Name'], keep='last').reset_index(drop=True)
+            combined_df = combined_df.drop_duplicates(
+                subset=["Week", "Driver Name"], keep="last"
+            ).reset_index(drop=True)
         except Exception as e:
             print(f"Error combining existing scorecards ledger: {e}")
             combined_df = new_scorecard_df
@@ -366,64 +498,93 @@ def append_to_master_scorecards_ledger(new_scorecard_df):
     safe_save_dataframe(combined_df, SCORECARDS_PATH)
     return combined_df
 
-def get_all_time_leaderboard(master_scorecards_df, min_lifetime_deliveries=1000, active_drivers_only=False, drivers_df=None):
-    cols_order = ["All-Time Rank", "Driver Name", "Weeks_Tracked", "Career_Avg_DQI", "Highest_DQI", "Lowest_DQI", "Lifetime_Packages", "Total Rescued", "Total Rescues Performed", "Recognition Status", "Latest_Standing"]
-    
+
+def get_all_time_leaderboard(
+    master_scorecards_df, min_lifetime_deliveries=1000, active_drivers_only=False, drivers_df=None
+):
+    cols_order = [
+        "All-Time Rank",
+        "Driver Name",
+        "Weeks_Tracked",
+        "Career_Avg_DQI",
+        "Highest_DQI",
+        "Lowest_DQI",
+        "Lifetime_Packages",
+        "Total Rescued",
+        "Total Rescues Performed",
+        "Recognition Status",
+        "Latest_Standing",
+    ]
+
     if master_scorecards_df is None or master_scorecards_df.empty:
         return pd.DataFrame(columns=cols_order)
 
     df = master_scorecards_df.copy()
 
     if active_drivers_only and drivers_df is not None and not drivers_df.empty:
-        if 'Status' in drivers_df.columns and 'Driver Name' in drivers_df.columns:
-            inactive_names = set(drivers_df[drivers_df['Status'].astype(str).str.upper() == 'INACTIVE']['Driver Name'].astype(str).str.strip().unique())
-            df = df[~df['Driver Name'].astype(str).str.strip().isin(inactive_names)].copy()
+        if "Status" in drivers_df.columns and "Driver Name" in drivers_df.columns:
+            inactive_names = set(
+                drivers_df[drivers_df["Status"].astype(str).str.upper() == "INACTIVE"][
+                    "Driver Name"
+                ]
+                .astype(str)
+                .str.strip()
+                .unique()
+            )
+            df = df[~df["Driver Name"].astype(str).str.strip().isin(inactive_names)].copy()
 
     if df.empty:
         return pd.DataFrame(columns=cols_order)
 
-    score_col = 'Unified_Composite_Score' if 'Unified_Composite_Score' in df.columns else 'Overall Score'
+    score_col = "Unified_Composite_Score" if "Unified_Composite_Score" in df.columns else "Overall Score"
 
-    df[score_col] = pd.to_numeric(df[score_col].astype(str).str.replace('%', ''), errors='coerce').fillna(0.0)
-    df['Packages Delivered'] = pd.to_numeric(df.get('Packages Delivered', 0), errors='coerce').fillna(0)
-    df['weighted_score_prod'] = df[score_col] * df['Packages Delivered']
+    df[score_col] = pd.to_numeric(
+        df[score_col].astype(str).str.replace("%", ""), errors="coerce"
+    ).fillna(0.0)
+    df["Packages Delivered"] = pd.to_numeric(df.get("Packages Delivered", 0), errors="coerce").fillna(0)
+    df["weighted_score_prod"] = df[score_col] * df["Packages Delivered"]
 
-    df = df.sort_values(by=['Week'], ascending=True)
+    df = df.sort_values(by=["Week"], ascending=True)
 
     incidents_df = load_local_incidents_log()
     permanently_disqualified = set()
-    if incidents_df is not None and not incidents_df.empty and 'Driver Name' in incidents_df.columns:
+    if incidents_df is not None and not incidents_df.empty and "Driver Name" in incidents_df.columns:
         for _, inc in incidents_df.iterrows():
-            if "CRITICAL" in str(inc['Severity']).upper():
-                matched_n = find_best_driver_match(inc['Driver Name'], list(df['Driver Name'].unique()))
+            if "CRITICAL" in str(inc["Severity"]).upper():
+                matched_n = find_best_driver_match(inc["Driver Name"], list(df["Driver Name"].unique()))
                 if matched_n:
                     permanently_disqualified.add(matched_n)
 
     rescues_df = load_local_rescues_log()
 
     records = []
-    for d_name, group in df.groupby('Driver Name'):
-        weeks_cnt = group['Week'].nunique()
-        tot_pkgs = int(group['Packages Delivered'].sum())
-        
-        career_avg = (group['weighted_score_prod'].sum() / tot_pkgs) if tot_pkgs > 0 else group[score_col].mean()
-        
+    for d_name, group in df.groupby("Driver Name"):
+        weeks_cnt = group["Week"].nunique()
+        tot_pkgs = int(group["Packages Delivered"].sum())
+
+        career_avg = (group["weighted_score_prod"].sum() / tot_pkgs) if tot_pkgs > 0 else group[score_col].mean()
+
         highest = group[score_col].max()
         lowest = group[score_col].min()
-        latest_standing = group['Overall Standing'].iloc[-1] if 'Overall Standing' in group.columns else 'N/A'
+        latest_standing = group["Overall Standing"].iloc[-1] if "Overall Standing" in group.columns else "N/A"
 
-        total_rescued_career = int(group['Times Rescued'].sum()) if 'Times Rescued' in group.columns else 0
-        total_performed_career = int(group['Rescues Performed'].sum()) if 'Rescues Performed' in group.columns else 0
+        total_rescued_career = int(group["Times Rescued"].sum()) if "Times Rescued" in group.columns else 0
+        total_performed_career = int(group["Rescues Performed"].sum()) if "Rescues Performed" in group.columns else 0
 
         if rescues_df is not None and not rescues_df.empty:
-            if 'Rescued Driver' in rescues_df.columns:
-                r_match = rescues_df[rescues_df['Rescued Driver'].apply(lambda x: find_best_driver_match(x, [d_name]) == d_name)]
-                behind_r = r_match[r_match['Reason'].astype(str).str.lower().str.contains('behind on route|behind|slow', na=False)]
-                total_rescued_career = len(behind_r)
-            if 'Rescuer Driver' in rescues_df.columns:
-                p_match = rescues_df[rescues_df['Rescuer Driver'].apply(lambda x: find_best_driver_match(x, [d_name]) == d_name)]
-                if 'Rescuer Type' in p_match.columns:
-                    eligible_p = p_match[~p_match['Rescuer Type'].astype(str).str.lower().str.contains('sweeper', na=False)]
+            if "Rescued Driver" in rescues_df.columns:
+                r_match = rescues_df[
+                    rescues_df["Rescued Driver"].apply(lambda x: find_best_driver_match(x, [d_name]) == d_name)
+                ]
+                total_rescued_career = len(_filter_penalized_rescues(r_match))
+            if "Rescuer Driver" in rescues_df.columns:
+                p_match = rescues_df[
+                    rescues_df["Rescuer Driver"].apply(lambda x: find_best_driver_match(x, [d_name]) == d_name)
+                ]
+                if "Rescuer Type" in p_match.columns:
+                    eligible_p = p_match[
+                        ~p_match["Rescuer Type"].astype(str).str.lower().str.contains("sweeper", na=False)
+                    ]
                     total_performed_career = len(eligible_p)
                 else:
                     total_performed_career = len(p_match)
@@ -431,35 +592,41 @@ def get_all_time_leaderboard(master_scorecards_df, min_lifetime_deliveries=1000,
         rec_status = "Eligible"
         if d_name in permanently_disqualified:
             rec_status = "Disqualified (Critical Incident)"
-        elif 'Recognition_Eligible' in group.columns and not group['Recognition_Eligible'].all():
+        elif "Recognition_Eligible" in group.columns and not group["Recognition_Eligible"].all():
             rec_status = "Temporarily Ineligible"
 
-        records.append({
-            "Driver Name": d_name,
-            "Weeks_Tracked": weeks_cnt,
-            "Career_Avg_DQI": round(career_avg, 2),
-            "Highest_DQI": round(highest, 2),
-            "Lowest_DQI": round(lowest, 2),
-            "Lifetime_Packages": tot_pkgs,
-            "Total Rescued": total_rescued_career,
-            "Total Rescues Performed": total_performed_career,
-            "Recognition Status": rec_status,
-            "Latest_Standing": latest_standing
-        })
+        records.append(
+            {
+                "Driver Name": d_name,
+                "Weeks_Tracked": weeks_cnt,
+                "Career_Avg_DQI": round(career_avg, 2),
+                "Highest_DQI": round(highest, 2),
+                "Lowest_DQI": round(lowest, 2),
+                "Lifetime_Packages": tot_pkgs,
+                "Total Rescued": total_rescued_career,
+                "Total Rescues Performed": total_performed_career,
+                "Recognition Status": rec_status,
+                "Latest_Standing": latest_standing,
+            }
+        )
 
     leaderboard = pd.DataFrame(records)
 
     if leaderboard.empty:
         return pd.DataFrame(columns=cols_order)
 
-    eligible_df = leaderboard[leaderboard['Lifetime_Packages'] >= min_lifetime_deliveries].copy()
-    unranked_df = leaderboard[leaderboard['Lifetime_Packages'] < min_lifetime_deliveries].copy()
+    eligible_df = leaderboard[leaderboard["Lifetime_Packages"] >= min_lifetime_deliveries].copy()
+    unranked_df = leaderboard[leaderboard["Lifetime_Packages"] < min_lifetime_deliveries].copy()
 
-    eligible_df = eligible_df.sort_values(by=['Career_Avg_DQI', 'Lifetime_Packages'], ascending=[False, False]).reset_index(drop=True)
-    eligible_df['All-Time Rank'] = (eligible_df.index + 1).astype(str)
+    eligible_df = eligible_df.sort_values(
+        by=["Career_Avg_DQI", "Lifetime_Packages"], ascending=[False, False]
+    ).reset_index(drop=True)
+    eligible_df["All-Time Rank"] = (eligible_df.index + 1).astype(str)
 
-    unranked_df = unranked_df.sort_values(by=['Lifetime_Packages', 'Career_Avg_DQI'], ascending=[False, False]).reset_index(drop=True)
-    unranked_df['All-Time Rank'] = "Unranked (< 1k Delivered)"
+    unranked_df = unranked_df.sort_values(
+        by=["Lifetime_Packages", "Career_Avg_DQI"], ascending=[False, False]
+    ).reset_index(drop=True)
+    unranked_df["All-Time Rank"] = "Unranked (< 1k Delivered)"
 
     final_leaderboard = pd.concat([eligible_df, unranked_df], ignore_index=True)
     return final_leaderboard[cols_order]
