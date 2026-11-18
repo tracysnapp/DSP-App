@@ -13,7 +13,9 @@ from engine import (
     SCORECARDS_PATH, 
     log_dispatch_action, 
     load_local_incidents_log, 
-    save_driver_incident
+    save_driver_incident,
+    update_driver_incident,
+    delete_driver_incident
 )
 
 def render_scorecards_tab():
@@ -102,7 +104,6 @@ def render_scorecards_tab():
             weekly_df = scorecards_df[scorecards_df['Week'].astype(str) == selected_week].copy()
             score_col = 'Unified_Composite_Score' if 'Unified_Composite_Score' in weekly_df.columns else 'Overall Score'
 
-            # FIXED: Added explicit non-empty guard to prevent IndexError on zero-route weeks
             if not weekly_df.empty:
                 weekly_df[score_col] = pd.to_numeric(weekly_df[score_col].astype(str).str.replace('%', ''), errors='coerce').fillna(0)
                 weekly_df = weekly_df.sort_values(by=[score_col, 'Packages Delivered'], ascending=[False, False]).reset_index(drop=True)
@@ -110,7 +111,7 @@ def render_scorecards_tab():
                 medals = ["🥇 1st", "🥈 2nd", "🥉 3rd"]
                 weekly_df['Rank'] = [medals[i] if i < len(medals) else f"#{i+1}" for i in range(len(weekly_df))]
 
-                disp_cols = ['Rank', 'Driver Name', score_col, 'Overall Standing', 'Packages Delivered', 'FICO']
+                disp_cols = ['Rank', 'Driver Name', score_col, 'Overall Standing', 'Packages Delivered', 'Recognition_Eligible', 'Ineligibility_Reason', 'FICO']
                 valid_cols = [c for c in disp_cols if c in weekly_df.columns]
 
                 st.dataframe(weekly_df[valid_cols], use_container_width=True, hide_index=True)
@@ -180,11 +181,11 @@ def render_scorecards_tab():
     # ---------------------------------------------------------
     with tab_incidents:
         st.markdown("#### 🚨 Driver Incident & Behavior Log")
-        st.caption("Record on-pad or on-road safety violations, vehicle damage, unprofessional behavior, or customer/warehouse complaints.")
+        st.caption("Record on-pad or on-road safety violations, vehicle damage, unprofessional behavior, or complaints. Edit or delete existing entries below.")
 
         incidents_df = load_local_incidents_log()
 
-        with st.expander("➕ Log New Driving or Behavior Incident", expanded=True):
+        with st.expander("➕ Log New Driving or Behavior Incident", expanded=False):
             col_in1, col_in2, col_in3 = st.columns(3)
             
             driver_options = []
@@ -217,9 +218,9 @@ def render_scorecards_tab():
                 van_list += sorted(fleet_df['vehicleName'].astype(str).str.strip().unique())
 
             inc_van = col_in4.selectbox("Associated Van Bumper (Optional)", options=van_list, key="inc_van_sel")
-            inc_detail = col_in5.text_input("Short Infraction Summary*", placeholder="e.g. Copped an attitude with dispatcher over dispatch phone and hung up multiple times", key="inc_detail_input")
+            inc_detail = col_in5.text_input("Short Infraction Summary*", placeholder="e.g. Copped an attitude with dispatcher over dispatch phone", key="inc_detail_input")
             
-            inc_notes = st.text_area("Detailed Action Taken / Management Notes", placeholder="e.g. Addressed attitude on dispatch line during debrief; issued formal warning regarding professional communication.", key="inc_notes_input")
+            inc_notes = st.text_area("Detailed Action Taken / Management Notes", placeholder="e.g. Addressed attitude on dispatch line; issued formal warning.", key="inc_notes_input")
 
             if st.button("🚨 Record Incident to Master Log", type="primary"):
                 if not inc_driver or inc_driver == "Select Driver..." or not inc_detail.strip():
@@ -239,9 +240,73 @@ def render_scorecards_tab():
                     st.rerun()
 
         st.markdown("---")
+        st.markdown("#### ✏️ Edit or Delete Existing Incidents")
+        if incidents_df is not None and not incidents_df.empty:
+            incidents_df['Display_Label'] = [
+                f"[{row.get('Date', '')}] {row.get('Driver Name', '')} - {row.get('Category', '')} ({row.get('Severity', '')})"
+                for _, row in incidents_df.iterrows()
+            ]
+            selected_incident_label = st.selectbox("Select Incident Record to Modify", options=["Select Record..."] + list(incidents_df['Display_Label']))
+
+            if selected_incident_label != "Select Record...":
+                match_idx = incidents_df[incidents_df['Display_Label'] == selected_incident_label].index[0]
+                row_data = incidents_df.loc[match_idx]
+
+                with st.form("edit_incident_form"):
+                    st.markdown(f"**Editing Incident Index #{match_idx}** (Logged: {row_data.get('Date', '')})")
+                    
+                    e_col1, e_col2, e_col3 = st.columns(3)
+                    e_driver = e_col1.text_input("Driver Name", value=str(row_data.get('Driver Name', '')))
+                    
+                    sev_options = ["Minor (Coaching Required)", "Moderate (Written Warning)", "Severe (Final Warning)", "Critical (Suspension / Termination)"]
+                    current_sev = str(row_data.get('Severity', ''))
+                    sev_idx = sev_options.index(current_sev) if current_sev in sev_options else 0
+                    e_severity = e_col2.selectbox("Severity Level", options=sev_options, index=sev_idx)
+
+                    cat_options = [
+                        "Pad/Parking Lot Safety", "Reckless Driving", "Damage to Vehicle", "Left Trash In Van",
+                        "Unprofessional Behavior / Attitude", "Customer Complaint", "Property Damage",
+                        "Uniform Violation", "Route Refusal/Package Abandonment", "Gross Insubordination", "Other"
+                    ]
+                    current_cat = str(row_data.get('Category', ''))
+                    cat_idx = cat_options.index(current_cat) if current_cat in cat_options else 0
+                    e_category = e_col3.selectbox("Incident Category", options=cat_options, index=cat_idx)
+
+                    e_col4, e_col5 = st.columns(2)
+                    e_van = e_col4.text_input("Van Bumper", value=str(row_data.get('Van Bumper', 'N/A')))
+                    e_detail = e_col5.text_input("Infraction / Detail", value=str(row_data.get('Infraction / Detail', '')))
+                    e_notes = st.text_area("Notes / Action Taken", value=str(row_data.get('Notes', '')))
+
+                    col_btn1, col_btn2 = st.columns(2)
+                    submit_edit = col_btn1.form_submit_button("💾 Save Changes", type="primary", use_container_width=True)
+                    submit_delete = col_btn2.form_submit_button("🗑️ Delete Incident Record", type="secondary", use_container_width=True)
+
+                    if submit_edit:
+                        update_driver_incident(
+                            row_idx=match_idx,
+                            driver_name=e_driver,
+                            severity=e_severity,
+                            category=e_category,
+                            infraction_detail=e_detail,
+                            van_bumper=e_van,
+                            logged_by=active_user,
+                            notes=e_notes
+                        )
+                        log_dispatch_action(f"Updated incident record for '{e_driver}' (Index #{match_idx}).", username=active_user)
+                        st.success("Incident record updated successfully!")
+                        st.rerun()
+
+                    if submit_delete:
+                        delete_driver_incident(match_idx)
+                        log_dispatch_action(f"Deleted incident record index #{match_idx}.", username=active_user)
+                        st.success("Incident record deleted successfully!")
+                        st.rerun()
+
+        st.markdown("---")
         st.markdown("#### 📜 Master Incident & Behavior Log Ledger")
         if incidents_df is not None and not incidents_df.empty:
-            st.dataframe(incidents_df, use_container_width=True, hide_index=True)
+            display_inc_df = incidents_df.drop(columns=['Display_Label'], errors='ignore')
+            st.dataframe(display_inc_df, use_container_width=True, hide_index=True)
         else:
             st.info("No driving or behavior incidents currently recorded.")
 
