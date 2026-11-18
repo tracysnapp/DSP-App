@@ -1,232 +1,155 @@
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
-from engine import log_dispatch_action, save_daily_closing_checklist, update_van_last_driven
-from modules.roster import update_closing_checklist_assignments, get_sorted_roster
+from engine import log_dispatch_action, save_daily_closing_checklist
+from modules.roster import generate_printable_closing_html
+
+CLOSING_COLUMNS = [
+    "Driver Name",
+    "Van",
+    "Clock out time",
+    "DVIC Complete",
+    "Damage?",
+    "Cleaned?",
+    "Keys Returned",
+    "Phone Returned",
+    "Portable Charger",
+    "Fuel Card Returned",
+    "Fuel Level",
+    "Packages/Returns Handled",
+    "Remarks",
+    "DA Signature",
+]
 
 
 def render_closing_checklist_tab():
-    st.subheader("📝 Daily Closing & Debrief Checklist")
-
-    active_user = st.session_state.get("user_name", "Dispatcher")
-
-    # Button / Action to Generate/Initialize Closing Checklist from Current Roster
-    if "current_roster" in st.session_state and not st.session_state["current_roster"].empty:
-        col_gen1, col_gen2 = st.columns([2, 2])
-        with col_gen1:
-            if st.button("🚀 Generate Closing Checklist from Roster", type="primary", use_container_width=True):
-                update_closing_checklist_assignments(
-                    st.session_state["current_roster"], st.session_state
-                )
-                
-                # Automatically record last driven date for all vans assigned on the roster
-                roster_df = st.session_state["current_roster"]
-                if "Van Bumper" in roster_df.columns:
-                    van_bumpers = roster_df["Van Bumper"].dropna().unique()
-                    today_str = pd.Timestamp.now().strftime("%Y-%m-%d")
-                    for v in van_bumpers:
-                        v_str = str(v).strip()
-                        if v_str and v_str.upper() not in ["UNASSIGNED", "NAN", "NONE", "N/A", ""]:
-                            update_van_last_driven(v_str, activity_date=today_str)
-                            
-                log_dispatch_action(
-                    "Generated Daily Closing Checklist and updated van last driven records.",
-                    username=active_user,
-                )
-                st.toast("Closing checklist generated and van last driven dates updated!", icon="🚐")
-                st.rerun()
-
-    if (
-        "closing_df" not in st.session_state
-        or st.session_state["closing_df"] is None
-        or st.session_state["closing_df"].empty
-    ):
-        if (
-            "current_roster" in st.session_state
-            and not st.session_state["current_roster"].empty
-        ):
-            update_closing_checklist_assignments(
-                st.session_state["current_roster"], st.session_state
-            )
-        else:
-            st.session_state["closing_df"] = pd.DataFrame(
-                columns=[
-                    "Van",
-                    "Driver",
-                    "Route",
-                    "Phone ID",
-                    "Bag Returned",
-                    "Key Returned",
-                    "Phone Returned",
-                    "Gas Level",
-                    "Miles",
-                    "Debrief Notes",
-                    "Status",
-                ]
-            )
-
-    closing_df = st.session_state["closing_df"]
-
-    if not closing_df.empty:
-        c1, c2, c3 = st.columns([2, 1, 1])
-        with c1:
-            st.caption("Track return of equipment, gas level, and route debrief status.")
-        with c2:
-            pass
-        with c3:
-            if st.button(
-                "💾 Save Debrief Updates", type="primary", use_container_width=True
-            ):
-                save_daily_closing_checklist(st.session_state["closing_df"])
-                
-                # Also ensure last driven dates are recorded upon saving debriefs
-                for _, row in st.session_state["closing_df"].iterrows():
-                    v_num = str(row.get("Van", "")).strip()
-                    if v_num and v_num.upper() not in ["UNASSIGNED", "NAN", "NONE", "N/A", ""]:
-                        update_van_last_driven(v_num)
-
-                log_dispatch_action(
-                    "Saved Daily Closing & Debrief Checklist state & updated fleet last driven.",
-                    username=active_user,
-                )
-                st.toast("Closing checklist saved and fleet recency updated!", icon="📝")
-                st.rerun()
-
-        closing_config = {
-            "Van": st.column_config.TextColumn("Van", disabled=True, width="small"),
-            "Driver": st.column_config.TextColumn(
-                "Driver", disabled=True, width="medium"
-            ),
-            "Route": st.column_config.TextColumn(
-                "Route", disabled=True, width="small"
-            ),
-            "Phone ID": st.column_config.TextColumn(
-                "Phone ID", disabled=True, width="small"
-            ),
-            "Bag Returned": st.column_config.CheckboxColumn(
-                "Bag Ret.", default=False, width="small"
-            ),
-            "Key Returned": st.column_config.CheckboxColumn(
-                "Key Ret.", default=False, width="small"
-            ),
-            "Phone Returned": st.column_config.CheckboxColumn(
-                "Phone Ret.", default=False, width="small"
-            ),
-            "Gas Level": st.column_config.SelectboxColumn(
-                "Gas Level",
-                options=["Full", "3/4", "1/2", "1/4", "Empty"],
-                required=True,
-                width="small",
-            ),
-            "Miles": st.column_config.NumberColumn(
-                "End Miles", min_value=0, step=1, width="small"
-            ),
-            "Debrief Notes": st.column_config.TextColumn(
-                "Debrief Notes / Issues", width="large"
-            ),
-            "Status": st.column_config.SelectboxColumn(
-                "Status",
-                options=["PENDING", "DEBRIEFED", "FLAGGED"],
-                required=True,
-                width="small",
-            ),
-        }
-
-        def on_closing_change():
-            changes = st.session_state.get("closing_checklist_editor_state")
-            if changes and "closing_df" in st.session_state:
-                for row_idx, col_changes in changes.get("edited_rows", {}).items():
-                    for col_name, new_val in col_changes.items():
-                        st.session_state["closing_df"].at[row_idx, col_name] = new_val
-                save_daily_closing_checklist(st.session_state["closing_df"])
-
-        st.data_editor(
-            st.session_state["closing_df"],
-            column_config=closing_config,
+    hdr_left, hdr_right = st.columns([3, 1])
+    with hdr_left:
+        st.subheader("📝 End-of-Day Driver Closing & Debrief Checklist")
+        st.caption(
+            "Auto-populated from today's active Dispatch Roster. Track van returns, equipment check-in, and debrief remarks."
+        )
+    with hdr_right:
+        st.markdown("<div style='padding-top: 0.4rem;'></div>", unsafe_allow_html=True)
+        save_top_clicked = st.button(
+            "💾 Save Debrief Log",
+            type="primary",
             use_container_width=True,
-            hide_index=True,
-            key="closing_checklist_editor_state",
-            on_change=on_closing_change,
+            key="save_closing_top_btn",
         )
 
-        printable_closing_df = get_sorted_roster(st.session_state["closing_df"]) if 'Route' in st.session_state["closing_df"].columns else st.session_state["closing_df"]
-
-        st.markdown("---")
-        st.subheader("🖨️ Clipboard Print Preview (Closing & Debrief Checklist)")
-
-        html_closing_view = f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <style>
-                body {{
-                    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-                    color: #111;
-                    padding: 10px;
-                }}
-                table {{
-                    width: 100%;
-                    border-collapse: collapse;
-                    margin-top: 10px;
-                    font-size: 12px;
-                }}
-                th, td {{
-                    border: 1px solid #ddd;
-                    padding: 6px 8px;
-                    text-align: left;
-                }}
-                th {{
-                    background-color: #f4f4f4;
-                    font-weight: bold;
-                }}
-                h3 {{
-                    margin-bottom: 5px;
-                }}
-                .print-btn-container {{
-                    margin-bottom: 15px;
-                }}
-                .print-btn {{
-                    background-color: #007bff;
-                    color: white;
-                    padding: 8px 16px;
-                    border: none;
-                    border-radius: 4px;
-                    cursor: pointer;
-                    font-size: 14px;
-                    font-weight: 500;
-                    box-shadow: 0 1px 3px rgba(0,0,0,0.12);
-                }}
-                .print-btn:hover {{
-                    background-color: #0056b3;
-                }}
-                @media print {{
-                    .print-btn-container {{
-                        display: none;
-                    }}
-                }}
-            </style>
-        </head>
-        <body>
-            <div class="print-btn-container">
-                <button class="print-btn" onclick="window.print()">🖨️ Print Checklist</button>
-            </div>
-            <h3>Daily Closing & Debrief Clipboard View</h3>
-            {printable_closing_df.to_html(index=False, classes='closing-table', border=0)}
-        </body>
-        </html>
-        """
-
-        components.html(html_closing_view, height=500, scrolling=True)
-
-        csv = printable_closing_df.to_csv(index=False).encode("utf-8")
-        st.download_button(
-            label="📥 Export Closing Checklist CSV (For Records/Archiving)",
-            data=csv,
-            file_name="daily_closing_checklist.csv",
-            mime="text/csv",
-        )
+    closing_df = st.session_state.get("closing_df")
+    if closing_df is None or closing_df.empty:
+        closing_df = pd.DataFrame(columns=CLOSING_COLUMNS)
     else:
-        st.info(
-            "No active roster loaded yet. Run auto-assignment or load a roster"
-            " snapshot in Tab 1 to populate the closing checklist."
+        closing_df = closing_df.copy()
+        if "Van Number" in closing_df.columns and "Van" not in closing_df.columns:
+            closing_df = closing_df.rename(columns={"Van Number": "Van"})
+        for col in CLOSING_COLUMNS:
+            if col not in closing_df.columns:
+                closing_df[col] = ""
+        closing_df = closing_df[CLOSING_COLUMNS].fillna("").astype(str)
+
+    # Top KPI Summary Bar
+    total_out = len(closing_df)
+    debriefed_cnt = (
+        len(
+            closing_df[
+                (closing_df["Clock out time"].str.strip() != "")
+                | (closing_df["Keys Returned"].str.strip().str.upper() == "YES")
+            ]
         )
+        if total_out > 0
+        else 0
+    )
+    pending_cnt = max(total_out - debriefed_cnt, 0)
+    flagged_cnt = (
+        len(
+            closing_df[
+                (closing_df["Damage?"].str.strip().str.upper() == "YES")
+                | (closing_df["Cleaned?"].str.strip().str.upper() == "NO")
+                | (closing_df["DVIC Complete"].str.strip().str.upper() == "NO")
+            ]
+        )
+        if total_out > 0
+        else 0
+    )
+
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Total Vans / Drivers Out", total_out)
+    k2.metric("Debriefed", debriefed_cnt)
+    k3.metric("Pending Return", pending_cnt)
+    k4.metric("Flagged Issues", flagged_cnt)
+
+    st.markdown("---")
+
+    if closing_df.empty:
+        st.info(
+            "No active routes loaded yet. Upload a Cortex export or restore a snapshot in the sidebar to populate the debrief checklist."
+        )
+        return
+
+    closing_config = {
+        "Driver Name": st.column_config.TextColumn("Driver Name", width="medium"),
+        "Van": st.column_config.TextColumn("Van", width="small"),
+        "Clock out time": st.column_config.TextColumn("Clock Out", width="small"),
+        "DVIC Complete": st.column_config.SelectboxColumn(
+            "DVIC", options=["", "Yes", "No"], width="small"
+        ),
+        "Damage?": st.column_config.SelectboxColumn(
+            "Damage?", options=["", "No", "Yes"], width="small"
+        ),
+        "Cleaned?": st.column_config.SelectboxColumn(
+            "Cleaned?", options=["", "Yes", "No"], width="small"
+        ),
+        "Keys Returned": st.column_config.SelectboxColumn(
+            "Keys", options=["", "Yes", "No"], width="small"
+        ),
+        "Phone Returned": st.column_config.SelectboxColumn(
+            "Phone", options=["", "Yes", "No"], width="small"
+        ),
+        "Portable Charger": st.column_config.SelectboxColumn(
+            "Charger", options=["", "Yes", "No"], width="small"
+        ),
+        "Fuel Card Returned": st.column_config.SelectboxColumn(
+            "Fuel Card", options=["", "Yes", "No"], width="small"
+        ),
+        "Fuel Level": st.column_config.SelectboxColumn(
+            "Fuel",
+            options=["", "Full", "3/4", "1/2", "1/4", "Low"],
+            width="small",
+        ),
+        "Packages/Returns Handled": st.column_config.SelectboxColumn(
+            "RTS Handled", options=["", "Yes", "No", "N/A"], width="small"
+        ),
+        "Remarks": st.column_config.TextColumn("Remarks", width="large"),
+        "DA Signature": st.column_config.TextColumn("DA Signature", width="medium"),
+    }
+
+    edited_closing = st.data_editor(
+        closing_df,
+        column_config=closing_config,
+        num_rows="dynamic",
+        use_container_width=True,
+        hide_index=True,
+        key="closing_checklist_editor",
+    )
+
+    if save_top_clicked:
+        cleaned_save = edited_closing.fillna("").astype(str)
+        st.session_state["closing_df"] = cleaned_save
+        save_daily_closing_checklist(cleaned_save)
+        log_dispatch_action(
+            "Updated and saved End-of-Day Closing Checklist.",
+            username=st.session_state.get("user_name"),
+        )
+        st.toast("Closing checklist saved to Cloud Storage!", icon="💾")
+        st.rerun()
+
+    st.markdown("---")
+    with st.expander("🖨️ Printable Landscape Debrief Sheet (Clipboard Ready)", expanded=False):
+        st.caption(
+            "Generates a clean landscape print sheet with blank check-in boxes and wide signature fields."
+        )
+        printable_html = generate_printable_closing_html(edited_closing)
+        components.html(printable_html, height=520, scrolling=True)
