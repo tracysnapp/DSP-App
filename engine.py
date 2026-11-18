@@ -44,6 +44,7 @@ STANDING_SCHEDULES_PATH = os.getenv(
 SCORECARDS_PATH = os.getenv("SCORECARDS_PATH", "master_scorecards.xlsx")
 ATTENDANCE_LOG_PATH = os.getenv("ATTENDANCE_LOG_PATH", "attendance_log.xlsx")
 INCIDENTS_LOG_PATH = os.getenv("INCIDENTS_LOG_PATH", "master_incidents.xlsx")
+RESCUES_LOG_PATH = os.getenv("RESCUES_LOG_PATH", "master_rescues.xlsx")
 HISTORY_DIR = os.getenv("HISTORY_DIR", "history")
 LOG_FILE_PATH = os.getenv("DISPATCH_LOG_PATH", "dispatch_audit.log")
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
@@ -211,7 +212,7 @@ def save_json_auto(data: dict, file_path: str):
           json.dumps(data, indent=2), content_type="application/json"
       )
     except Exception as e:
-      print(f"Error saving JSON {file_path} to GCS: {e}")
+      print(f"Error saving JSON {file_path} from GCS: {e}")
     return
 
   dir_name = os.path.dirname(file_path)
@@ -346,7 +347,6 @@ def load_snapshot_file(filename):
 
 @st.cache_data(ttl=60, show_spinner=False)
 def get_van_last_driven_dict():
-  """Returns a dictionary mapping van bumpers to their last driven date from master fleet data instantly."""
   fleet_df = load_dataframe_auto(MASTER_FLEET_PATH)
   van_last_date = {}
 
@@ -384,7 +384,6 @@ def get_van_last_driven_dict():
 
 
 def update_van_last_driven(van_bumper, activity_date=None):
-  """Updates the 'Last Driven' date for a specific van bumper in master_fleet.xlsx instantly."""
   if not van_bumper or str(van_bumper).strip().upper() in [
       "NAN",
       "NONE",
@@ -751,7 +750,6 @@ def update_driver_incident(
     logged_by,
     notes,
 ):
-  """Updates an existing incident log entry."""
   incidents_df = load_local_incidents_log()
   if incidents_df is not None and not incidents_df.empty and 0 <= row_idx < len(incidents_df):
     for col in incidents_df.columns:
@@ -771,10 +769,88 @@ def update_driver_incident(
 
 
 def delete_driver_incident(row_idx):
-  """Deletes an incident log entry by row index."""
   incidents_df = load_local_incidents_log()
   if incidents_df is not None and not incidents_df.empty and 0 <= row_idx < len(incidents_df):
     incidents_df = incidents_df.drop(index=row_idx).reset_index(drop=True)
     safe_save_dataframe(incidents_df, INCIDENTS_LOG_PATH, allow_empty=True)
     load_local_incidents_log.clear()
   return incidents_df
+
+
+# ---------------------------------------------------------
+# RESCUES LOG MANAGERS
+# ---------------------------------------------------------
+@st.cache_data(ttl=10, show_spinner=False)
+def load_local_rescues_log():
+  df = load_dataframe_auto(RESCUES_LOG_PATH)
+  return (
+      df.copy()
+      if not df.empty
+      else pd.DataFrame(
+          columns=[
+              "Date",
+              "Rescued Driver",
+              "Rescuer Driver",
+              "Reason",
+              "Logged By",
+              "Notes",
+          ]
+      )
+  )
+
+
+def save_driver_rescue(
+    rescued_driver,
+    rescuer_driver,
+    reason,
+    logged_by,
+    notes,
+):
+  rescues_df = load_local_rescues_log()
+  new_record = {
+      "Date": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M"),
+      "Rescued Driver": str(rescued_driver).strip(),
+      "Rescuer Driver": str(rescuer_driver).strip(),
+      "Reason": str(reason).strip(),
+      "Logged By": str(logged_by).strip(),
+      "Notes": str(notes).strip(),
+  }
+  updated_df = pd.concat(
+      [rescues_df, pd.DataFrame([new_record])], ignore_index=True
+  )
+  safe_save_dataframe(updated_df, RESCUES_LOG_PATH)
+  load_local_rescues_log.clear()
+  return updated_df
+
+
+def update_driver_rescue(
+    row_idx,
+    rescued_driver,
+    rescuer_driver,
+    reason,
+    logged_by,
+    notes,
+):
+  rescues_df = load_local_rescues_log()
+  if rescues_df is not None and not rescues_df.empty and 0 <= row_idx < len(rescues_df):
+    for col in rescues_df.columns:
+      rescues_df[col] = rescues_df[col].astype(object)
+
+    rescues_df.loc[row_idx, "Rescued Driver"] = str(rescued_driver).strip()
+    rescues_df.loc[row_idx, "Rescuer Driver"] = str(rescuer_driver).strip()
+    rescues_df.loc[row_idx, "Reason"] = str(reason).strip()
+    rescues_df.loc[row_idx, "Logged By"] = str(logged_by).strip()
+    rescues_df.loc[row_idx, "Notes"] = str(notes).strip()
+
+    safe_save_dataframe(rescues_df, RESCUES_LOG_PATH)
+    load_local_rescues_log.clear()
+  return rescues_df
+
+
+def delete_driver_rescue(row_idx):
+  rescues_df = load_local_rescues_log()
+  if rescues_df is not None and not rescues_df.empty and 0 <= row_idx < len(rescues_df):
+    rescues_df = rescues_df.drop(index=row_idx).reset_index(drop=True)
+    safe_save_dataframe(rescues_df, RESCUES_LOG_PATH, allow_empty=True)
+    load_local_rescues_log.clear()
+  return rescues_df
