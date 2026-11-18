@@ -212,7 +212,7 @@ def save_json_auto(data: dict, file_path: str):
           json.dumps(data, indent=2), content_type="application/json"
       )
     except Exception as e:
-      print(f"Error saving JSON {file_path} from GCS: {e}")
+      print(f"Error saving JSON {file_path} to GCS: {e}")
     return
 
   dir_name = os.path.dirname(file_path)
@@ -783,25 +783,27 @@ def delete_driver_incident(row_idx):
 @st.cache_data(ttl=10, show_spinner=False)
 def load_local_rescues_log():
   df = load_dataframe_auto(RESCUES_LOG_PATH)
-  return (
-      df.copy()
-      if not df.empty
-      else pd.DataFrame(
-          columns=[
-              "Date",
-              "Rescued Driver",
-              "Rescuer Driver",
-              "Reason",
-              "Logged By",
-              "Notes",
-          ]
-      )
+  if not df.empty:
+    if "Rescuer Type" not in df.columns:
+      df["Rescuer Type"] = "Route Driver (Completed Route)"
+    return df.copy()
+  return pd.DataFrame(
+      columns=[
+          "Date",
+          "Rescued Driver",
+          "Rescuer Driver",
+          "Rescuer Type",
+          "Reason",
+          "Logged By",
+          "Notes",
+      ]
   )
 
 
 def save_driver_rescue(
     rescued_driver,
     rescuer_driver,
+    rescuer_type,
     reason,
     logged_by,
     notes,
@@ -811,6 +813,7 @@ def save_driver_rescue(
       "Date": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M"),
       "Rescued Driver": str(rescued_driver).strip(),
       "Rescuer Driver": str(rescuer_driver).strip(),
+      "Rescuer Type": str(rescuer_type).strip(),
       "Reason": str(reason).strip(),
       "Logged By": str(logged_by).strip(),
       "Notes": str(notes).strip(),
@@ -827,6 +830,7 @@ def update_driver_rescue(
     row_idx,
     rescued_driver,
     rescuer_driver,
+    rescuer_type,
     reason,
     logged_by,
     notes,
@@ -838,6 +842,7 @@ def update_driver_rescue(
 
     rescues_df.loc[row_idx, "Rescued Driver"] = str(rescued_driver).strip()
     rescues_df.loc[row_idx, "Rescuer Driver"] = str(rescuer_driver).strip()
+    rescues_df.loc[row_idx, "Rescuer Type"] = str(rescuer_type).strip()
     rescues_df.loc[row_idx, "Reason"] = str(reason).strip()
     rescues_df.loc[row_idx, "Logged By"] = str(logged_by).strip()
     rescues_df.loc[row_idx, "Notes"] = str(notes).strip()
