@@ -1,3 +1,5 @@
+import datetime
+import pandas as pd
 import streamlit as st
 from engine import (
     delete_driver_rescue,
@@ -7,216 +9,286 @@ from engine import (
     update_driver_rescue,
 )
 
+RESCUE_REASONS = [
+    "Behind on Route",
+    "Slow Pace",
+    "Route Overload / High Stop Count",
+    "Van Breakdown / Mechanical",
+    "Medical / Personal Emergency",
+    "Weather / Traffic Delay",
+    "Other",
+]
+
+RESCUER_TYPES = [
+    "Route Driver (Completed Route)",
+    "Sweeper / Helper (No Bonus)",
+]
+
+
+def _get_prioritized_driver_list():
+    drivers_df = st.session_state.get("drivers_df")
+    current_roster = st.session_state.get("current_roster")
+
+    on_road_names = []
+    if current_roster is not None and not current_roster.empty:
+        for col in ["Driver", "Helper"]:
+            if col in current_roster.columns:
+                for val in current_roster[col].dropna().unique():
+                    clean_v = str(val).strip()
+                    if clean_v and clean_v.lower() not in ["nan", "none", "null", "unassigned"]:
+                        if clean_v not in on_road_names:
+                            on_road_names.append(clean_v)
+
+    all_active = []
+    if drivers_df is not None and not drivers_df.empty and "Driver Name" in drivers_df.columns:
+        if "Status" in drivers_df.columns:
+            active_df = drivers_df[drivers_df["Status"].astype(str).str.upper() != "INACTIVE"]
+        else:
+            active_df = drivers_df
+        all_active = sorted(active_df["Driver Name"].dropna().astype(str).str.strip().unique().tolist())
+
+    options = []
+    label_to_name = {}
+    seen = set()
+
+    for name in sorted(on_road_names):
+        lbl = f"🟢 {name} (On Road Today)"
+        options.append(lbl)
+        label_to_name[lbl] = name
+        seen.add(name.lower())
+
+    for name in all_active:
+        if name and name.lower() not in seen:
+            options.append(name)
+            label_to_name[name] = name
+            seen.add(name.lower())
+
+    return options, label_to_name
+
 
 def render_rescues_tab():
-    st.subheader("🚚 Rescue & Sweep Dispatch Tracker")
+    st.subheader("🚚 Daily Rescues & Sweeps Log")
     st.caption(
-        "Log rescues. Rescues due to being behind on route deduct 5 pts. Route"
-        " drivers who complete their route and perform a rescue earn +5 pts"
-        " bonus (Designated Sweepers do not earn bonus points)."
+        "Log mid-day rescues and sweeps. Penalized rescues deduct 5 pts from the rescued driver; route drivers who complete their route and perform a rescue earn +5 pts."
     )
-
-    drivers_df = st.session_state.get("drivers_df")
-    scorecards_df = st.session_state.get("scorecards_df")
-    active_user = st.session_state.get("user_name", "Dispatch Desk")
 
     rescues_df = load_local_rescues_log()
 
-    with st.expander("➕ Log New Rescue Dispatch", expanded=True):
-        col_r1, col_r2 = st.columns(2)
+    # Top KPI Bar
+    total_rescues = len(rescues_df) if rescues_df is not None else 0
+    penalized_cnt = (
+        int(rescues_df["Penalize Rescued"].fillna(False).astype(bool).sum())
+        if total_rescues > 0 and "Penalize Rescued" in rescues_df.columns
+        else 0
+    )
+    bonus_cnt = (
+        len(
+            rescues_df[
+                ~rescues_df["Rescuer Type"].astype(str).str.lower().str.contains("sweeper", na=False)
+            ]
+        )
+        if total_rescues > 0 and "Rescuer Type" in rescues_df.columns
+        else 0
+    )
+    sweeper_cnt = max(total_rescues - bonus_cnt, 0)
 
-        driver_options = []
-        if (
-            drivers_df is not None
-            and not drivers_df.empty
-            and "Driver Name" in drivers_df.columns
-        ):
-            driver_options = sorted(drivers_df["Driver Name"].dropna().unique())
-        elif (
-            scorecards_df is not None
-            and not scorecards_df.empty
-            and "Driver Name" in scorecards_df.columns
-        ):
-            driver_options = sorted(
-                scorecards_df["Driver Name"].dropna().unique()
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Total Rescues Logged", total_rescues)
+    k2.metric("Penalized Rescues (-5 pts)", penalized_cnt)
+    k3.metric("Route Driver Assists (+5 pts)", bonus_cnt)
+    k4.metric("Designated Sweeps", sweeper_cnt)
+
+    st.markdown("---")
+
+    driver_options, label_to_name = _get_prioritized_driver_list()
+
+    # Log New Rescue Expander
+    with st.expander("➕ Log New Rescue / Sweep", expanded=True):
+        with st.form("log_rescue_form", clear_on_submit=True):
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                if driver_options:
+                    rescued_sel = st.selectbox("Rescued Driver (Needed Help)", options=driver_options)
+                    rescued_name = label_to_name.get(rescued_sel, rescued_sel)
+                else:
+                    rescued_name = st.text_input("Rescued Driver Name")
+            with c2:
+                if driver_options:
+                    rescuer_sel = st.selectbox("Rescuer Driver (Provided Help)", options=driver_options)
+                    rescuer_name = label_to_name.get(rescuer_sel, rescuer_sel)
+                else:
+                    rescuer_name = st.text_input("Rescuer Driver Name")
+            with c3:
+                rescuer_type = st.selectbox("Rescuer Role / Type", options=RESCUER_TYPES)
+
+            c4, c5 = st.columns([2, 1])
+            with c4:
+                reason = st.selectbox("Rescue Reason", options=RESCUE_REASONS)
+            with c5:
+                st.markdown("<div style='padding-top: 1.7rem;'></div>", unsafe_allow_html=True)
+                penalize_flag = st.checkbox(
+                    "Deduct 5 pts from Rescued Driver",
+                    value=True,
+                    help="Check if the driver fell behind due to pace/performance. Uncheck for van breakdowns or route overload.",
+                )
+
+            notes = st.text_input(
+                "Notes (Totes / Stops Taken, Time, Location)",
+                placeholder="e.g., Took 2 totes (28 stops) at 4:15 PM",
             )
 
-        r_driver = col_r1.selectbox(
-            "Driver Rescued*",
-            options=driver_options if driver_options else ["Select Driver..."],
-            key="res_rescued_sel",
-        )
-        r_rescuer = col_r2.selectbox(
-            "Rescuer / Sweeper Driver*",
-            options=driver_options if driver_options else ["Select Driver..."],
-            key="res_rescuer_sel",
-        )
+            submitted = st.form_submit_button(
+                "💾 Log Rescue Record", type="primary", use_container_width=True
+            )
+            if submitted:
+                if not str(rescued_name).strip() or not str(rescuer_name).strip():
+                    st.error("Both Rescued Driver and Rescuer Driver are required.")
+                elif str(rescued_name).strip().lower() == str(rescuer_name).strip().lower():
+                    st.error("Rescued Driver and Rescuer Driver cannot be the same person.")
+                else:
+                    save_driver_rescue(
+                        rescued_driver=rescued_name,
+                        rescuer_driver=rescuer_name,
+                        rescuer_type=rescuer_type,
+                        reason=reason,
+                        logged_by=st.session_state.get("user_name", "Dispatch"),
+                        notes=notes,
+                        penalize_rescued=penalize_flag,
+                    )
+                    log_dispatch_action(
+                        f"Logged rescue: {rescuer_name} rescued {rescued_name} ({reason}).",
+                        username=st.session_state.get("user_name"),
+                    )
+                    st.toast("Rescue logged successfully!", icon="🚚")
+                    st.rerun()
 
-        col_r3, col_r4 = st.columns(2)
-        r_type = col_r3.selectbox(
-            "Rescuer Role / Status*",
-            options=[
-                "Route Driver (Completed Route)",
-                "Designated Sweeper",
-            ],
-            key="res_type_sel",
-        )
+    st.markdown("---")
+    st.markdown("### 📋 Master Rescues Ledger")
 
-        r_reason = col_r4.selectbox(
-            "Rescue Reason*",
-            options=[
-                "Behind on Route / Slow Pace",
-                "Vehicle Breakdown / Swap",
-                "App / Navigation Glitch",
-                "Safety / Medical / Personal",
-                "Other",
-            ],
-            key="res_reason_sel",
-        )
+    if rescues_df is None or rescues_df.empty:
+        st.info("No rescue records logged yet.")
+        return
 
-        r_notes = st.text_input(
-            "Dispatch Notes / Package Count",
-            placeholder="e.g. Swiped 35 stops to help catch up",
-            key="res_notes_input",
-        )
+    # Quick Search Filter
+    search_q = st.text_input(
+        "🔍 Filter Rescues by Driver, Reason, or Notes",
+        placeholder="Type driver name or reason...",
+        key="rescues_search_filter",
+    ).strip().lower()
 
-        if st.button("🚚 Record Rescue Dispatch", type="primary"):
-            if (
-                not r_driver
-                or r_driver == "Select Driver..."
-                or not r_rescuer
-                or r_rescuer == "Select Driver..."
-            ):
-                st.warning(
-                    "Please select both the rescued driver and the rescuer."
+    display_df = rescues_df.copy()
+    if search_q:
+        mask = display_df.apply(
+            lambda r: search_q in " ".join(r.astype(str).values).lower(), axis=1
+        )
+        display_df = display_df[mask]
+
+    display_df = display_df.iloc[::-1].reset_index(drop=True)
+    st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+    # Current Week Net Rescue Point Impact Summary
+    with st.expander("📊 Current Week Net Rescue Point Impact (Last 7 Days)", expanded=False):
+        temp_df = rescues_df.copy()
+        temp_df["Parsed_Date"] = pd.to_datetime(temp_df["Date"], errors="coerce")
+        cutoff = pd.Timestamp.now() - pd.Timedelta(days=7)
+        recent_df = temp_df[temp_df["Parsed_Date"].isna() | (temp_df["Parsed_Date"] >= cutoff)]
+
+        if recent_df.empty:
+            st.caption("No rescues logged in the past 7 days.")
+        else:
+            impact_map = {}
+            for _, r in recent_df.iterrows():
+                r_driver = str(r.get("Rescued Driver", "")).strip()
+                p_driver = str(r.get("Rescuer Driver", "")).strip()
+                is_pen = bool(r.get("Penalize Rescued", False))
+                is_sweeper = "sweeper" in str(r.get("Rescuer Type", "")).lower()
+
+                if r_driver:
+                    impact_map.setdefault(r_driver, {"Times Rescued (Penalized)": 0, "Route Assists (+5)": 0, "Net Points": 0})
+                    if is_pen:
+                        impact_map[r_driver]["Times Rescued (Penalized)"] += 1
+                        impact_map[r_driver]["Net Points"] -= 5
+
+                if p_driver:
+                    impact_map.setdefault(p_driver, {"Times Rescued (Penalized)": 0, "Route Assists (+5)": 0, "Net Points": 0})
+                    if not is_sweeper:
+                        impact_map[p_driver]["Route Assists (+5)"] += 1
+                        impact_map[p_driver]["Net Points"] += 5
+
+            impact_rows = [{"Driver Name": k, **v} for k, v in impact_map.items()]
+            impact_summary_df = pd.DataFrame(impact_rows).sort_values(
+                by=["Net Points", "Driver Name"], ascending=[False, True]
+            )
+            st.dataframe(impact_summary_df, use_container_width=True, hide_index=True)
+
+    # Edit / Delete Selected Record
+    with st.expander("✏️ Edit or Delete a Rescue Record", expanded=False):
+        record_labels = [
+            f"Row {idx} | {row.get('Date', '')} — {row.get('Rescuer Driver', '')} rescued {row.get('Rescued Driver', '')} ({row.get('Reason', '')})"
+            for idx, row in rescues_df.iterrows()
+        ]
+        selected_label = st.selectbox(
+            "Select Record to Modify",
+            options=list(reversed(record_labels)),
+            key="edit_rescue_selector",
+        )
+        sel_idx = int(selected_label.split("|")[0].replace("Row", "").strip())
+        sel_row = rescues_df.loc[sel_idx]
+
+        with st.form("edit_rescue_form"):
+            ec1, ec2, ec3 = st.columns(3)
+            with ec1:
+                edit_rescued = st.text_input(
+                    "Rescued Driver", value=str(sel_row.get("Rescued Driver", ""))
                 )
-            elif r_driver == r_rescuer:
-                st.warning("A driver cannot rescue themselves.")
-            else:
-                save_driver_rescue(
-                    rescued_driver=r_driver,
-                    rescuer_driver=r_rescuer,
-                    rescuer_type=r_type,
-                    reason=r_reason,
-                    logged_by=active_user,
-                    notes=r_notes,
+            with ec2:
+                edit_rescuer = st.text_input(
+                    "Rescuer Driver", value=str(sel_row.get("Rescuer Driver", ""))
                 )
-                log_dispatch_action(
-                    f"Logged rescue: '{r_rescuer}' ({r_type}) rescued"
-                    f" '{r_driver}' ({r_reason}).",
-                    username=active_user,
+            with ec3:
+                curr_type = str(sel_row.get("Rescuer Type", RESCUER_TYPES[0]))
+                type_idx = RESCUER_TYPES.index(curr_type) if curr_type in RESCUER_TYPES else 0
+                edit_type = st.selectbox("Rescuer Type", options=RESCUER_TYPES, index=type_idx)
+
+            ec4, ec5 = st.columns([2, 1])
+            with ec4:
+                curr_reason = str(sel_row.get("Reason", RESCUE_REASONS[0]))
+                reason_idx = RESCUE_REASONS.index(curr_reason) if curr_reason in RESCUE_REASONS else 0
+                edit_reason = st.selectbox("Rescue Reason", options=RESCUE_REASONS, index=reason_idx)
+            with ec5:
+                st.markdown("<div style='padding-top: 1.7rem;'></div>", unsafe_allow_html=True)
+                edit_penalize = st.checkbox(
+                    "Deduct 5 pts from Rescued",
+                    value=bool(sel_row.get("Penalize Rescued", False)),
                 )
-                st.toast(f"Logged rescue for {r_driver}!", icon="🚚")
+
+            edit_notes = st.text_input("Notes", value=str(sel_row.get("Notes", "")))
+
+            btn_col1, btn_col2 = st.columns(2)
+            with btn_col1:
+                update_btn = st.form_submit_button(
+                    "💾 Update Record", type="primary", use_container_width=True
+                )
+            with btn_col2:
+                delete_btn = st.form_submit_button(
+                    "🗑️ Delete Record", type="secondary", use_container_width=True
+                )
+
+            if update_btn:
+                update_driver_rescue(
+                    row_idx=sel_idx,
+                    rescued_driver=edit_rescued,
+                    rescuer_driver=edit_rescuer,
+                    rescuer_type=edit_type,
+                    reason=edit_reason,
+                    logged_by=st.session_state.get("user_name", "Dispatch"),
+                    notes=edit_notes,
+                    penalize_rescued=edit_penalize,
+                )
+                st.toast("Rescue record updated!", icon="💾")
                 st.rerun()
 
-    st.markdown("---")
-    st.markdown("#### ✏️ Edit or Delete Existing Rescue Records")
-    if rescues_df is not None and not rescues_df.empty:
-        rescues_df["Display_Label"] = [
-            f"[{row.get('Date', '')}] Rescued: {row.get('Rescued Driver', '')}"
-            f" | Rescuer: {row.get('Rescuer Driver', '')}"
-            f" [{row.get('Rescuer Type', 'Route Driver')}]"
-            f" ({row.get('Reason', '')})"
-            for _, row in rescues_df.iterrows()
-        ]
-        selected_rescue_label = st.selectbox(
-            "Select Rescue Record to Modify",
-            options=["Select Record..."] + list(rescues_df["Display_Label"]),
-        )
-
-        if selected_rescue_label != "Select Record...":
-            match_r_idx = rescues_df[
-                rescues_df["Display_Label"] == selected_rescue_label
-            ].index[0]
-            r_row_data = rescues_df.loc[match_r_idx]
-
-            with st.form("edit_rescue_form"):
-                st.markdown(
-                    f"**Editing Rescue Index #{match_r_idx}** (Logged:"
-                    f" {r_row_data.get('Date', '')})"
-                )
-
-                er_col1, er_col2 = st.columns(2)
-                er_rescued = er_col1.text_input(
-                    "Rescued Driver",
-                    value=str(r_row_data.get("Rescued Driver", "")),
-                )
-                er_rescuer = er_col2.text_input(
-                    "Rescuer Driver",
-                    value=str(r_row_data.get("Rescuer Driver", "")),
-                )
-
-                er_col3, er_col4 = st.columns(2)
-                type_opts = [
-                    "Route Driver (Completed Route)",
-                    "Designated Sweeper",
-                ]
-                cur_type = str(
-                    r_row_data.get(
-                        "Rescuer Type", "Route Driver (Completed Route)"
-                    )
-                )
-                er_type = er_col3.selectbox(
-                    "Rescuer Role / Status",
-                    options=type_opts,
-                    index=type_opts.index(cur_type)
-                    if cur_type in type_opts
-                    else 0,
-                )
-
-                reason_opts = [
-                    "Behind on Route / Slow Pace",
-                    "Vehicle Breakdown / Swap",
-                    "App / Navigation Glitch",
-                    "Safety / Medical / Personal",
-                    "Other",
-                ]
-                cur_reason = str(r_row_data.get("Reason", ""))
-                er_reason = er_col4.selectbox(
-                    "Reason",
-                    options=reason_opts,
-                    index=reason_opts.index(cur_reason)
-                    if cur_reason in reason_opts
-                    else 0,
-                )
-
-                er_notes = st.text_area(
-                    "Notes", value=str(r_row_data.get("Notes", ""))
-                )
-
-                col_rbtn1, col_rbtn2 = st.columns(2)
-                if col_rbtn1.form_submit_button(
-                    "💾 Save Rescue Changes",
-                    type="primary",
-                    use_container_width=True,
-                ):
-                    update_driver_rescue(
-                        match_r_idx,
-                        er_rescued,
-                        er_rescuer,
-                        er_type,
-                        er_reason,
-                        active_user,
-                        er_notes,
-                    )
-                    st.success("Rescue record updated successfully!")
-                    st.rerun()
-                if col_rbtn2.form_submit_button(
-                    "🗑️ Delete Rescue Record",
-                    type="secondary",
-                    use_container_width=True,
-                ):
-                    delete_driver_rescue(match_r_idx)
-                    st.success("Rescue record deleted successfully!")
-                    st.rerun()
-
-    st.markdown("---")
-    st.markdown("#### 📜 Master Rescue Dispatch Ledger")
-    if rescues_df is not None and not rescues_df.empty:
-        st.dataframe(
-            rescues_df.drop(columns=["Display_Label"], errors="ignore"),
-            use_container_width=True,
-            hide_index=True,
-        )
-    else:
-        st.info("No rescue dispatches currently recorded.")
+            if delete_btn:
+                delete_driver_rescue(sel_idx)
+                st.toast("Rescue record deleted.", icon="🗑️")
+                st.rerun()
