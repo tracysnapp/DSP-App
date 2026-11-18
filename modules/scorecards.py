@@ -298,25 +298,29 @@ def calculate_unified_scorecard(overview_file, cdf_file=None, concessions_file=N
     # 7. Rescues Log Integration (Times Rescued vs Rescues Performed)
     rescues_df = load_local_rescues_log()
     if rescues_df is not None and not rescues_df.empty:
-        rescresc_keys = list(summary['Driver Name'].dropna().unique())
-
         for idx, row in summary.iterrows():
             d_name = row['Driver Name']
             
-            # Check rescues received because behind on route (5 pts penalty per rescue)
+            # Rescues received because behind on route (5 pts penalty per rescue)
             matched_rescued = rescues_df[rescues_df['Rescued Driver'].apply(lambda x: find_best_driver_match(x, [d_name]) == d_name)]
             if not matched_rescued.empty:
-                # Filter strictly for "Behind on route" reasons
                 behind_rescues = matched_rescued[matched_rescued['Reason'].astype(str).str.lower().str.contains('behind on route|behind|slow', na=False)]
                 rescue_count = len(behind_rescues)
                 if rescue_count > 0:
                     summary.loc[idx, 'Times Rescued'] = rescue_count
                     summary.loc[idx, 'rescue_received_penalty'] = float(rescue_count * 5.0)
 
-            # Check rescues performed (5 pts bonus per rescue performed)
+            # Rescues performed: ONLY route drivers who completed their route count & earn +5 pts bonus
             matched_rescuer = rescues_df[rescues_df['Rescuer Driver'].apply(lambda x: find_best_driver_match(x, [d_name]) == d_name)]
             if not matched_rescuer.empty:
-                performed_count = len(matched_rescuer)
+                if 'Rescuer Type' in matched_rescuer.columns:
+                    eligible_rescues = matched_rescuer[
+                        ~matched_rescuer['Rescuer Type'].astype(str).str.lower().str.contains('sweeper', na=False)
+                    ]
+                    performed_count = len(eligible_rescues)
+                else:
+                    performed_count = len(matched_rescuer)
+                    
                 if performed_count > 0:
                     summary.loc[idx, 'Rescues Performed'] = performed_count
                     summary.loc[idx, 'rescue_performed_bonus'] = float(performed_count * 5.0)
@@ -331,7 +335,7 @@ def calculate_unified_scorecard(overview_file, cdf_file=None, concessions_file=N
     summary['Volume_Exposure_Factor'] = (mean_team_pkgs / summary['Packages Delivered'].replace(0, mean_team_pkgs)).clip(lower=0.5, upper=1.25)
     summary['Normalized_Penalty'] = summary['Total_Raw_Penalty'] * summary['Volume_Exposure_Factor']
 
-    # Granular quality score minus normalized penalty, plus rescue performed bonus points
+    # Granular quality score minus normalized penalty, plus eligible rescue performed bonus points
     summary['Granular_Quality_Score'] = (100.0 - summary['Normalized_Penalty'] + summary['rescue_performed_bonus']).clip(lower=0.0, upper=100.0)
     summary['Unified_Composite_Score'] = (0.60 * summary['Overall Score']) + (0.40 * summary['Granular_Quality_Score'])
     summary['Unified_Composite_Score'] = summary['Unified_Composite_Score'].round(2)
@@ -411,7 +415,6 @@ def get_all_time_leaderboard(master_scorecards_df, min_lifetime_deliveries=1000,
         total_rescued_career = int(group['Times Rescued'].sum()) if 'Times Rescued' in group.columns else 0
         total_performed_career = int(group['Rescues Performed'].sum()) if 'Rescues Performed' in group.columns else 0
 
-        # Fallback aggregate if columns not in ledger yet
         if rescues_df is not None and not rescues_df.empty:
             if 'Rescued Driver' in rescues_df.columns:
                 r_match = rescues_df[rescues_df['Rescued Driver'].apply(lambda x: find_best_driver_match(x, [d_name]) == d_name)]
@@ -419,7 +422,11 @@ def get_all_time_leaderboard(master_scorecards_df, min_lifetime_deliveries=1000,
                 total_rescued_career = len(behind_r)
             if 'Rescuer Driver' in rescues_df.columns:
                 p_match = rescues_df[rescues_df['Rescuer Driver'].apply(lambda x: find_best_driver_match(x, [d_name]) == d_name)]
-                total_performed_career = len(p_match)
+                if 'Rescuer Type' in p_match.columns:
+                    eligible_p = p_match[~p_match['Rescuer Type'].astype(str).str.lower().str.contains('sweeper', na=False)]
+                    total_performed_career = len(eligible_p)
+                else:
+                    total_performed_career = len(p_match)
 
         rec_status = "Eligible"
         if d_name in permanently_disqualified:
