@@ -270,14 +270,14 @@ st.title("🚛 JNA Daily Operations & Command Center")
     tab_fleet,
     tab_scorecard,
 ) = st.tabs([
-    "📋 Route Assignment & Roster",
-    "🚚 Rescue & Sweep Dispatch Tracker",
-    "📝 Daily Closing & Debrief Checklist",
-    "🔑 Gate & Access Codes",
-    "📅 Master Driver Schedule",
-    "👥 Driver Directory & Attendance",
-    "🚐 Fleet & Phone Tracker",
-    "📊 Driver Performance Scorecards",
+    "📋 Dispatch Roster",
+    "🚚 Rescues & Sweeps",
+    "📝 Closing Checklist",
+    "🔑 Access Codes",
+    "📅 Master Schedule",
+    "👥 Drivers & Attendance",
+    "🚐 Fleet & Phones",
+    "📊 Scorecards",
 ])
 
 with tab_roster:
