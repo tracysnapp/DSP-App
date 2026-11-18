@@ -25,24 +25,39 @@ SHIFT_OPTIONS = ["", "Driver", "Helper", "OPS-AM", "OPS-PM", "On-Call", "Off", "
 DAY_PREFIXES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
 
 
-def _get_amazon_week_info(ref_date: datetime.date):
-    """Calculates Amazon Sunday-Saturday week number and date headers."""
+def get_current_amazon_week_info(ref_date: datetime.date = None):
+    """Calculates Amazon Sunday-Saturday week year, week number, date list, headers, and range label."""
+    if ref_date is None:
+        ref_date = datetime.date.today()
+    elif isinstance(ref_date, pd.Timestamp):
+        ref_date = ref_date.date()
+
     days_since_sunday = (ref_date.weekday() + 1) % 7
     week_start = ref_date - datetime.timedelta(days=days_since_sunday)
     week_end = week_start + datetime.timedelta(days=6)
 
-    year_start = datetime.date(week_start.year, 1, 1)
+    # Amazon week year is determined by the Sunday start of the week
+    # (e.g., 2026 runs through Week 53 starting Sun Dec 27, 2026; 2027 Week 1 starts Sun Jan 3, 2027)
+    amazon_year = week_start.year
+    year_start = datetime.date(amazon_year, 1, 1)
     first_sun_offset = (6 - year_start.weekday()) % 7
     first_sunday = year_start + datetime.timedelta(days=first_sun_offset)
+
     if week_start < first_sunday:
-        week_num = 1
+        prev_year = amazon_year - 1
+        prev_year_start = datetime.date(prev_year, 1, 1)
+        prev_first_sun = prev_year_start + datetime.timedelta(
+            days=(6 - prev_year_start.weekday()) % 7
+        )
+        amazon_year = prev_year
+        week_num = ((week_start - prev_first_sun).days // 7) + 1
     else:
         week_num = ((week_start - first_sunday).days // 7) + 1
 
     day_dates = [week_start + datetime.timedelta(days=i) for i in range(7)]
     day_headers = [d.strftime("%a %d %b") for d in day_dates]
     range_str = f"{week_start.strftime('%d-%b')} to {week_end.strftime('%d-%b')}"
-    return week_start.year, week_num, day_dates, day_headers, range_str
+    return amazon_year, week_num, day_dates, day_headers, range_str
 
 
 def render_scheduler_tab():
@@ -93,7 +108,7 @@ def render_scheduler_tab():
                 st.session_state["sched_anchor_date"] += datetime.timedelta(days=7)
                 st.rerun()
 
-        yr, wk_num, day_dates, day_headers, range_str = _get_amazon_week_info(
+        yr, wk_num, day_dates, day_headers, range_str = get_current_amazon_week_info(
             st.session_state["sched_anchor_date"]
         )
         week_key = f"{yr}_W{wk_num:02d}"
@@ -107,18 +122,23 @@ def render_scheduler_tab():
             new_targets = {}
             for i, dh in enumerate(day_headers):
                 with t_cols[i]:
-                    default_val = int(saved_wk_targets.get(dh, saved_wk_targets.get(DAY_PREFIXES[i], 20)))
+                    default_val = int(
+                        saved_wk_targets.get(dh, saved_wk_targets.get(DAY_PREFIXES[i], 20))
+                    )
                     new_targets[dh] = st.number_input(
-                        dh, min_value=0, max_value=100, value=default_val, step=1, key=f"tgt_{week_key}_{i}"
+                        dh,
+                        min_value=0,
+                        max_value=100,
+                        value=default_val,
+                        step=1,
+                        key=f"tgt_{week_key}_{i}",
                     )
             if st.button("💾 Save Route Targets", type="primary"):
                 weekly_targets[week_key] = new_targets
                 save_weekly_targets_storage(weekly_targets)
                 st.toast("Weekly route targets saved!", icon="🎯")
                 st.rerun()
-        expected_routes_dict = weekly_targets.get(
-            week_key, {dh: 20 for dh in day_headers}
-        )
+        expected_routes_dict = weekly_targets.get(week_key, {dh: 20 for dh in day_headers})
 
         # Load or Initialize Week Schedule
         raw_sched = load_local_schedule(year=yr, week_num=wk_num)
@@ -211,7 +231,7 @@ def render_scheduler_tab():
         with act1:
             if st.button("⚡ Auto-Fill Schedule", use_container_width=True):
                 prev_date = st.session_state["sched_anchor_date"] - datetime.timedelta(days=7)
-                p_yr, p_wk, _, _, _ = _get_amazon_week_info(prev_date)
+                p_yr, p_wk, _, _, _ = get_current_amazon_week_info(prev_date)
                 prev_df = load_local_schedule(year=p_yr, week_num=p_wk)
 
                 auto_df = auto_generate_pattern_weekly_schedule(
@@ -308,7 +328,10 @@ def render_scheduler_tab():
                     s_date = st.date_input("Start Date", value=datetime.date.today())
                 with d2:
                     e_date = st.date_input("End Date", value=datetime.date.today())
-                pto_cat = st.selectbox("Category", options=["PTO / Vacation", "Unpaid Time Off", "Medical Leave", "Military"])
+                pto_cat = st.selectbox(
+                    "Category",
+                    options=["PTO / Vacation", "Unpaid Time Off", "Medical Leave", "Military"],
+                )
                 pto_notes = st.text_input("Notes")
 
                 if st.form_submit_button("➕ Add Time-Off Request", type="primary", use_container_width=True):
