@@ -262,45 +262,45 @@ st.title("🚛 JNA Daily Operations & Command Center")
 
 (
     tab_roster,
-    tab_rescues,
-    tab_closing,
-    tab_access,
-    tab_scheduler,
-    tab_drivers,
     tab_fleet,
+    tab_drivers,
+    tab_rescues,
+    tab_access,
+    tab_closing,
+    tab_scheduler,
     tab_scorecard,
 ) = st.tabs([
     "📋 Dispatch Roster",
-    "🚚 Rescues & Sweeps",
-    "📝 Closing Checklist",
-    "🔑 Access Codes",
-    "📅 Master Schedule",
-    "👥 Drivers & Attendance",
     "🚐 Fleet & Phones",
+    "👥 Drivers & Attendance",
+    "🚚 Rescues Log",
+    "🔑 Access Codes",
+    "📝 Closing Checklist",
+    "📅 Scheduling",
     "📊 Scorecards",
 ])
 
 with tab_roster:
   render_dispatch_roster_tab(cortex_file, update_live_roster)
 
+with tab_fleet:
+  render_fleet_tab()
+
+with tab_drivers:
+  render_driver_directory_tab()
+
 with tab_rescues:
   render_rescues_tab()
-
-with tab_closing:
-  render_closing_checklist_tab()
 
 with tab_access:
   user_role = st.session_state.get("user_role", "Dispatcher")
   render_access_codes_tab(is_admin=(user_role == "Admin"))
 
+with tab_closing:
+  render_closing_checklist_tab()
+
 with tab_scheduler:
   render_scheduler_tab()
-
-with tab_drivers:
-  render_driver_directory_tab()
-
-with tab_fleet:
-  render_fleet_tab()
 
 with tab_scorecard:
   render_scorecards_tab()
