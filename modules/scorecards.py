@@ -2,13 +2,9 @@ import os
 import re
 import pandas as pd
 from difflib import SequenceMatcher
-from engine import SCORECARDS_PATH, safe_save_dataframe, load_local_incidents_log, load_dataframe_auto
+from engine import SCORECARDS_PATH, safe_save_dataframe, load_local_incidents_log, load_local_rescues_log, load_dataframe_auto
 
 def normalize_name(name_str):
-    """
-    Standardizes names by lowercasing, stripping punctuation, 
-    and extracting first and last tokens (ignoring middle names).
-    """
     if pd.isna(name_str) or not str(name_str).strip():
         return ""
     
@@ -29,7 +25,6 @@ def normalize_name(name_str):
     return f"{tokens[0]} {tokens[-1]}"
 
 def find_best_driver_match(target_key, available_keys, threshold=0.80):
-    """Matches associate names across Cortex exports using string similarity and token normalization."""
     if not target_key or not available_keys:
         return None
     
@@ -56,11 +51,6 @@ def find_best_driver_match(target_key, available_keys, threshold=0.80):
     return best_match
 
 def get_driver_historical_trend(master_scorecards_df, driver_name):
-    """
-    Extracts chronological scorecard performance, DQI score trend, 
-    and key metrics for a specific Driver Associate from master_scorecards.xlsx,
-    incorporating driving/safety incidents.
-    """
     if master_scorecards_df is None or master_scorecards_df.empty or 'Driver Name' not in master_scorecards_df.columns:
         return pd.DataFrame(), {}, pd.DataFrame()
 
@@ -115,11 +105,6 @@ def get_driver_historical_trend(master_scorecards_df, driver_name):
     return driver_df, summary, driver_incidents_df
 
 def calculate_unified_scorecard(overview_file, cdf_file=None, concessions_file=None, rts_file=None, dvic_file=None):
-    """
-    Enhanced DQI Engine:
-    Incorporates Volume Exposure Load Normalization and Behavior Incidents
-    into the weekly quality score and recognition eligibility.
-    """
     if not overview_file:
         raise ValueError("Primary Overview Scorecard file is mandatory.")
 
@@ -172,6 +157,10 @@ def calculate_unified_scorecard(overview_file, cdf_file=None, concessions_file=N
     summary['rts_penalty'] = 0.0
     summary['dvic_penalty'] = 0.0
     summary['incident_penalty'] = 0.0
+    summary['rescue_received_penalty'] = 0.0
+    summary['rescue_performed_bonus'] = 0.0
+    summary['Times Rescued'] = 0
+    summary['Rescues Performed'] = 0
     
     primary_keys = set(summary['match_key'].unique())
 
@@ -258,7 +247,6 @@ def calculate_unified_scorecard(overview_file, cdf_file=None, concessions_file=N
         inc_match_keys = list(incidents_df['Driver Name'].dropna().unique())
         
         for idx, row in summary.iterrows():
-            m_key = row['match_key']
             matched_inc_name = find_best_driver_match(row['Driver Name'], inc_match_keys, threshold=0.80)
             if matched_inc_name:
                 driver_incs = incidents_df[incidents_df['Driver Name'] == matched_inc_name].copy()
@@ -307,8 +295,34 @@ def calculate_unified_scorecard(overview_file, cdf_file=None, concessions_file=N
                     summary.loc[idx, 'Recognition_Eligible'] = False
                     summary.loc[idx, 'Ineligibility_Reason'] = reason
 
-    # VOLUME EXPOSURE LOAD NORMALIZATION
-    summary['Total_Raw_Penalty'] = summary['cdf_penalty'] + summary['conc_penalty'] + summary['rts_penalty'] + summary['dvic_penalty'] + summary['incident_penalty']
+    # 7. Rescues Log Integration (Times Rescued vs Rescues Performed)
+    rescues_df = load_local_rescues_log()
+    if rescues_df is not None and not rescues_df.empty:
+        rescresc_keys = list(summary['Driver Name'].dropna().unique())
+
+        for idx, row in summary.iterrows():
+            d_name = row['Driver Name']
+            
+            # Check rescues received because behind on route (5 pts penalty per rescue)
+            matched_rescued = rescues_df[rescues_df['Rescued Driver'].apply(lambda x: find_best_driver_match(x, [d_name]) == d_name)]
+            if not matched_rescued.empty:
+                # Filter strictly for "Behind on route" reasons
+                behind_rescues = matched_rescued[matched_rescued['Reason'].astype(str).str.lower().str.contains('behind on route|behind|slow', na=False)]
+                rescue_count = len(behind_rescues)
+                if rescue_count > 0:
+                    summary.loc[idx, 'Times Rescued'] = rescue_count
+                    summary.loc[idx, 'rescue_received_penalty'] = float(rescue_count * 5.0)
+
+            # Check rescues performed (5 pts bonus per rescue performed)
+            matched_rescuer = rescues_df[rescues_df['Rescuer Driver'].apply(lambda x: find_best_driver_match(x, [d_name]) == d_name)]
+            if not matched_rescuer.empty:
+                performed_count = len(matched_rescuer)
+                if performed_count > 0:
+                    summary.loc[idx, 'Rescues Performed'] = performed_count
+                    summary.loc[idx, 'rescue_performed_bonus'] = float(performed_count * 5.0)
+
+    # VOLUME EXPOSURE LOAD NORMALIZATION & COMPOSITE SCORING
+    summary['Total_Raw_Penalty'] = summary['cdf_penalty'] + summary['conc_penalty'] + summary['rts_penalty'] + summary['dvic_penalty'] + summary['incident_penalty'] + summary['rescue_received_penalty']
     
     mean_team_pkgs = summary['Packages Delivered'].mean()
     if mean_team_pkgs <= 0:
@@ -317,17 +331,19 @@ def calculate_unified_scorecard(overview_file, cdf_file=None, concessions_file=N
     summary['Volume_Exposure_Factor'] = (mean_team_pkgs / summary['Packages Delivered'].replace(0, mean_team_pkgs)).clip(lower=0.5, upper=1.25)
     summary['Normalized_Penalty'] = summary['Total_Raw_Penalty'] * summary['Volume_Exposure_Factor']
 
-    summary['Granular_Quality_Score'] = (100.0 - summary['Normalized_Penalty']).clip(lower=0.0, upper=100.0)
+    # Granular quality score minus normalized penalty, plus rescue performed bonus points
+    summary['Granular_Quality_Score'] = (100.0 - summary['Normalized_Penalty'] + summary['rescue_performed_bonus']).clip(lower=0.0, upper=100.0)
     summary['Unified_Composite_Score'] = (0.60 * summary['Overall Score']) + (0.40 * summary['Granular_Quality_Score'])
     summary['Unified_Composite_Score'] = summary['Unified_Composite_Score'].round(2)
 
-    return summary.drop(columns=['match_key', 'cdf_penalty', 'conc_penalty', 'rts_penalty', 'dvic_penalty', 'incident_penalty', 'Total_Raw_Penalty', 'Volume_Exposure_Factor', 'Normalized_Penalty'])
+    drop_cols = [
+        'match_key', 'cdf_penalty', 'conc_penalty', 'rts_penalty', 'dvic_penalty', 
+        'incident_penalty', 'rescue_received_penalty', 'rescue_performed_bonus', 
+        'Total_Raw_Penalty', 'Volume_Exposure_Factor', 'Normalized_Penalty'
+    ]
+    return summary.drop(columns=[c for c in drop_cols if c in summary.columns])
 
 def append_to_master_scorecards_ledger(new_scorecard_df):
-    """
-    Appends the newly calculated weekly scorecard atomically to master_scorecards.xlsx.
-    Deduplicates on (Week, Driver Name) so re-uploading updates existing records cleanly.
-    """
     if new_scorecard_df is None or new_scorecard_df.empty:
         return pd.DataFrame()
 
@@ -347,12 +363,7 @@ def append_to_master_scorecards_ledger(new_scorecard_df):
     return combined_df
 
 def get_all_time_leaderboard(master_scorecards_df, min_lifetime_deliveries=1000, active_drivers_only=False, drivers_df=None):
-    """
-    Enhanced Leaderboard:
-    Calculates Package-Weighted DQI for career averages, factoring in incident penalties 
-    and enforcing permanent ineligibility for drivers with critical incidents.
-    """
-    cols_order = ["All-Time Rank", "Driver Name", "Weeks_Tracked", "Career_Avg_DQI", "Highest_DQI", "Lowest_DQI", "Lifetime_Packages", "Recognition Status", "Latest_Standing"]
+    cols_order = ["All-Time Rank", "Driver Name", "Weeks_Tracked", "Career_Avg_DQI", "Highest_DQI", "Lowest_DQI", "Lifetime_Packages", "Total Rescued", "Total Rescues Performed", "Recognition Status", "Latest_Standing"]
     
     if master_scorecards_df is None or master_scorecards_df.empty:
         return pd.DataFrame(columns=cols_order)
@@ -384,6 +395,8 @@ def get_all_time_leaderboard(master_scorecards_df, min_lifetime_deliveries=1000,
                 if matched_n:
                     permanently_disqualified.add(matched_n)
 
+    rescues_df = load_local_rescues_log()
+
     records = []
     for d_name, group in df.groupby('Driver Name'):
         weeks_cnt = group['Week'].nunique()
@@ -394,6 +407,19 @@ def get_all_time_leaderboard(master_scorecards_df, min_lifetime_deliveries=1000,
         highest = group[score_col].max()
         lowest = group[score_col].min()
         latest_standing = group['Overall Standing'].iloc[-1] if 'Overall Standing' in group.columns else 'N/A'
+
+        total_rescued_career = int(group['Times Rescued'].sum()) if 'Times Rescued' in group.columns else 0
+        total_performed_career = int(group['Rescues Performed'].sum()) if 'Rescues Performed' in group.columns else 0
+
+        # Fallback aggregate if columns not in ledger yet
+        if rescues_df is not None and not rescues_df.empty:
+            if 'Rescued Driver' in rescues_df.columns:
+                r_match = rescues_df[rescues_df['Rescued Driver'].apply(lambda x: find_best_driver_match(x, [d_name]) == d_name)]
+                behind_r = r_match[r_match['Reason'].astype(str).str.lower().str.contains('behind on route|behind|slow', na=False)]
+                total_rescued_career = len(behind_r)
+            if 'Rescuer Driver' in rescues_df.columns:
+                p_match = rescues_df[rescues_df['Rescuer Driver'].apply(lambda x: find_best_driver_match(x, [d_name]) == d_name)]
+                total_performed_career = len(p_match)
 
         rec_status = "Eligible"
         if d_name in permanently_disqualified:
@@ -408,6 +434,8 @@ def get_all_time_leaderboard(master_scorecards_df, min_lifetime_deliveries=1000,
             "Highest_DQI": round(highest, 2),
             "Lowest_DQI": round(lowest, 2),
             "Lifetime_Packages": tot_pkgs,
+            "Total Rescued": total_rescued_career,
+            "Total Rescues Performed": total_performed_career,
             "Recognition Status": rec_status,
             "Latest_Standing": latest_standing
         })
