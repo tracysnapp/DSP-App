@@ -36,17 +36,14 @@ def find_best_driver_match(target_key, available_keys, threshold=0.80):
     target_clean = str(target_key).strip().lower()
     target_norm = normalize_name(target_key)
     
-    # 1. Exact string match
     for key in available_keys:
         if target_clean == str(key).strip().lower():
             return key
 
-    # 2. Token Normalization Match (First + Last name)
     for key in available_keys:
         if target_norm and target_norm == normalize_name(key):
             return key
 
-    # 3. Fuzzy match fallback
     best_match = None
     best_score = 0.0
     
@@ -93,7 +90,6 @@ def get_driver_historical_trend(master_scorecards_df, driver_name):
     prev_score = driver_df[score_col].iloc[-2] if len(driver_df) > 1 else recent_score
     trend_delta = round(recent_score - prev_score, 2)
 
-    # Incident History Extraction
     incidents_df = load_local_incidents_log()
     driver_incidents_df = pd.DataFrame()
     incident_count = 0
@@ -121,8 +117,8 @@ def get_driver_historical_trend(master_scorecards_df, driver_name):
 def calculate_unified_scorecard(overview_file, cdf_file=None, concessions_file=None, rts_file=None, dvic_file=None):
     """
     Enhanced DQI Engine:
-    Incorporates Volume Exposure Load Normalization to prevent high-volume drivers from 
-    being unfairly penalized relative to low-volume nursery routes.
+    Incorporates Volume Exposure Load Normalization and Behavior Incidents
+    into the weekly quality score and recognition eligibility.
     """
     if not overview_file:
         raise ValueError("Primary Overview Scorecard file is mandatory.")
@@ -175,6 +171,7 @@ def calculate_unified_scorecard(overview_file, cdf_file=None, concessions_file=N
     summary['conc_penalty'] = 0.0
     summary['rts_penalty'] = 0.0
     summary['dvic_penalty'] = 0.0
+    summary['incident_penalty'] = 0.0
     
     primary_keys = set(summary['match_key'].unique())
 
@@ -216,11 +213,7 @@ def calculate_unified_scorecard(overview_file, cdf_file=None, concessions_file=N
 
         def get_rts_pts(row):
             code = str(row[r_code_col]).strip() if r_code_col and r_code_col in row else ''
-            
-            info = ""
-            if r_info_col and r_info_col in row and pd.notna(row[r_info_col]):
-                info = str(row[r_info_col]).strip()
-
+            info = str(row[r_info_col]).strip() if r_info_col and r_info_col in row and pd.notna(row[r_info_col]) else ''
             if code == 'NO RTS CODE SELECTED':
                 return 3.0
             if not info or info.lower() in ['nan', 'none', '']:
@@ -256,8 +249,71 @@ def calculate_unified_scorecard(overview_file, cdf_file=None, concessions_file=N
                     rushed_count = group['is_rushed'].sum()
                     summary.loc[summary['match_key'] == matched_key, 'dvic_penalty'] += float(rushed_count * 5.0)
 
+    # 6. Master Incidents Log Integration & Recognition Ineligibility Rules
+    incidents_df = load_local_incidents_log()
+    summary['Recognition_Eligible'] = True
+    summary['Ineligibility_Reason'] = "Eligible"
+
+    if incidents_df is not None and not incidents_df.empty and 'Driver Name' in incidents_df.columns and 'Severity' in incidents_df.columns:
+        inc_match_keys = list(incidents_df['Driver Name'].dropna().unique())
+        
+        # Determine week date range if possible or parse week string
+        current_week_str = summary['Week'].iloc[0] if not summary.empty else ""
+
+        for idx, row in summary.iterrows():
+            m_key = row['match_key']
+            matched_inc_name = find_best_driver_match(row['Driver Name'], inc_match_keys, threshold=0.80)
+            if matched_inc_name:
+                driver_incs = incidents_df[incidents_df['Driver Name'] == matched_inc_name].copy()
+                driver_incs['Parsed_Date'] = pd.to_datetime(driver_incs['Date'], errors='coerce')
+                
+                total_inc_penalty = 0.0
+                ineligible = False
+                reason = "Eligible"
+
+                for _, inc in driver_incs.iterrows():
+                    sev_str = str(inc['Severity']).upper()
+                    
+                    # Point weights for scoring impact
+                    if "MINOR" in sev_str:
+                        total_inc_penalty += 3.0
+                    elif "MODERATE" in sev_str:
+                        total_inc_penalty += 6.0
+                    elif "SEVERE" in sev_str:
+                        total_inc_penalty += 10.0
+                    elif "CRITICAL" in sev_str:
+                        total_inc_penalty += 15.0
+
+                    # Recognition Ineligibility Rules Check
+                    inc_date = inc['Parsed_Date']
+                    if pd.notna(inc_date):
+                        now = pd.Timestamp.now()
+                        diff_days = (now - inc_date).days
+                        
+                        if "MINOR" in sev_str and diff_days <= 7:
+                            ineligible = True
+                            reason = "Ineligible: Minor incident within past week"
+                        elif "MODERATE" in sev_str and diff_days <= 14:
+                            ineligible = True
+                            reason = "Ineligible: Moderate incident within past 2 weeks"
+                        elif "SEVERE" in sev_str and diff_days <= 30:
+                            ineligible = True
+                            reason = "Ineligible: Severe incident within past month"
+                        elif "CRITICAL" in sev_str:
+                            ineligible = True
+                            reason = "Permanently Ineligible (Critical incident on record)"
+                    else:
+                        if "CRITICAL" in sev_str:
+                            ineligible = True
+                            reason = "Permanently Ineligible (Critical incident on record)"
+
+                summary.loc[idx, 'incident_penalty'] = total_inc_penalty
+                if ineligible:
+                    summary.loc[idx, 'Recognition_Eligible'] = False
+                    summary.loc[idx, 'Ineligibility_Reason'] = reason
+
     # VOLUME EXPOSURE LOAD NORMALIZATION
-    summary['Total_Raw_Penalty'] = summary['cdf_penalty'] + summary['conc_penalty'] + summary['rts_penalty'] + summary['dvic_penalty']
+    summary['Total_Raw_Penalty'] = summary['cdf_penalty'] + summary['conc_penalty'] + summary['rts_penalty'] + summary['dvic_penalty'] + summary['incident_penalty']
     
     mean_team_pkgs = summary['Packages Delivered'].mean()
     if mean_team_pkgs <= 0:
@@ -270,13 +326,12 @@ def calculate_unified_scorecard(overview_file, cdf_file=None, concessions_file=N
     summary['Unified_Composite_Score'] = (0.60 * summary['Overall Score']) + (0.40 * summary['Granular_Quality_Score'])
     summary['Unified_Composite_Score'] = summary['Unified_Composite_Score'].round(2)
 
-    return summary.drop(columns=['match_key', 'cdf_penalty', 'conc_penalty', 'rts_penalty', 'dvic_penalty', 'Total_Raw_Penalty', 'Volume_Exposure_Factor', 'Normalized_Penalty'])
+    return summary.drop(columns=['match_key', 'cdf_penalty', 'conc_penalty', 'rts_penalty', 'dvic_penalty', 'incident_penalty', 'Total_Raw_Penalty', 'Volume_Exposure_Factor', 'Normalized_Penalty'])
 
 def append_to_master_scorecards_ledger(new_scorecard_df):
     """
     Appends the newly calculated weekly scorecard atomically to master_scorecards.xlsx.
     Deduplicates on (Week, Driver Name) so re-uploading updates existing records cleanly.
-    Supports both Local and Cloud (GCS) storage modes.
     """
     if new_scorecard_df is None or new_scorecard_df.empty:
         return pd.DataFrame()
@@ -299,10 +354,10 @@ def append_to_master_scorecards_ledger(new_scorecard_df):
 def get_all_time_leaderboard(master_scorecards_df, min_lifetime_deliveries=1000, active_drivers_only=False, drivers_df=None):
     """
     Enhanced Leaderboard:
-    Calculates Package-Weighted DQI for career averages. 
-    Optionally filters out inactive drivers when active_drivers_only=True.
+    Calculates Package-Weighted DQI for career averages, factoring in incident penalties 
+    and enforcing permanent ineligibility for drivers with critical incidents.
     """
-    cols_order = ["All-Time Rank", "Driver Name", "Weeks_Tracked", "Career_Avg_DQI", "Highest_DQI", "Lowest_DQI", "Lifetime_Packages", "Latest_Standing"]
+    cols_order = ["All-Time Rank", "Driver Name", "Weeks_Tracked", "Career_Avg_DQI", "Highest_DQI", "Lowest_DQI", "Lifetime_Packages", "Recognition Status", "Latest_Standing"]
     
     if master_scorecards_df is None or master_scorecards_df.empty:
         return pd.DataFrame(columns=cols_order)
@@ -325,6 +380,16 @@ def get_all_time_leaderboard(master_scorecards_df, min_lifetime_deliveries=1000,
 
     df = df.sort_values(by=['Week'], ascending=True)
 
+    # Check for critical incidents across all drivers for permanent disqualification
+    incidents_df = load_local_incidents_log()
+    permanently_disqualified = set()
+    if incidents_df is not None and not incidents_df.empty and 'Driver Name' in incidents_df.columns:
+        for _, inc in incidents_df.iterrows():
+            if "CRITICAL" in str(inc['Severity']).upper():
+                matched_n = find_best_driver_match(inc['Driver Name'], list(df['Driver Name'].unique()))
+                if matched_n:
+                    permanently_disqualified.add(matched_n)
+
     records = []
     for d_name, group in df.groupby('Driver Name'):
         weeks_cnt = group['Week'].nunique()
@@ -336,6 +401,12 @@ def get_all_time_leaderboard(master_scorecards_df, min_lifetime_deliveries=1000,
         lowest = group[score_col].min()
         latest_standing = group['Overall Standing'].iloc[-1] if 'Overall Standing' in group.columns else 'N/A'
 
+        rec_status = "Eligible"
+        if d_name in permanently_disqualified:
+            rec_status = "Disqualified (Critical Incident)"
+        elif 'Recognition_Eligible' in group.columns and not group['Recognition_Eligible'].all():
+            rec_status = "Temporarily Ineligible"
+
         records.append({
             "Driver Name": d_name,
             "Weeks_Tracked": weeks_cnt,
@@ -343,6 +414,7 @@ def get_all_time_leaderboard(master_scorecards_df, min_lifetime_deliveries=1000,
             "Highest_DQI": round(highest, 2),
             "Lowest_DQI": round(lowest, 2),
             "Lifetime_Packages": tot_pkgs,
+            "Recognition Status": rec_status,
             "Latest_Standing": latest_standing
         })
 
