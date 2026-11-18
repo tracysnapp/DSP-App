@@ -257,9 +257,6 @@ def calculate_unified_scorecard(overview_file, cdf_file=None, concessions_file=N
     if incidents_df is not None and not incidents_df.empty and 'Driver Name' in incidents_df.columns and 'Severity' in incidents_df.columns:
         inc_match_keys = list(incidents_df['Driver Name'].dropna().unique())
         
-        # Determine week date range if possible or parse week string
-        current_week_str = summary['Week'].iloc[0] if not summary.empty else ""
-
         for idx, row in summary.iterrows():
             m_key = row['match_key']
             matched_inc_name = find_best_driver_match(row['Driver Name'], inc_match_keys, threshold=0.80)
@@ -274,7 +271,6 @@ def calculate_unified_scorecard(overview_file, cdf_file=None, concessions_file=N
                 for _, inc in driver_incs.iterrows():
                     sev_str = str(inc['Severity']).upper()
                     
-                    # Point weights for scoring impact
                     if "MINOR" in sev_str:
                         total_inc_penalty += 3.0
                     elif "MODERATE" in sev_str:
@@ -284,7 +280,6 @@ def calculate_unified_scorecard(overview_file, cdf_file=None, concessions_file=N
                     elif "CRITICAL" in sev_str:
                         total_inc_penalty += 15.0
 
-                    # Recognition Ineligibility Rules Check
                     inc_date = inc['Parsed_Date']
                     if pd.notna(inc_date):
                         now = pd.Timestamp.now()
@@ -380,7 +375,6 @@ def get_all_time_leaderboard(master_scorecards_df, min_lifetime_deliveries=1000,
 
     df = df.sort_values(by=['Week'], ascending=True)
 
-    # Check for critical incidents across all drivers for permanent disqualification
     incidents_df = load_local_incidents_log()
     permanently_disqualified = set()
     if incidents_df is not None and not incidents_df.empty and 'Driver Name' in incidents_df.columns:
