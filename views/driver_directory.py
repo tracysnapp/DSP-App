@@ -1,273 +1,271 @@
 import pandas as pd
+import streamlit as st
 from engine import (
     ATTENDANCE_LOG_PATH,
     MASTER_DRIVERS_PATH,
     load_local_attendance_log,
     load_local_drivers,
+    load_local_schedule,
     log_dispatch_action,
     safe_save_dataframe,
 )
 from modules.fleet import process_driver_data
 from modules.schedule import calculate_driver_attendance_metrics
-import streamlit as st
+
+INFRACTION_TYPES = [
+    "Late Arrival (< 15 mins)",
+    "Late Arrival (15+ mins)",
+    "Call-Out (Excused)",
+    "Call-Out (Unexcused)",
+    "No-Call / No-Show",
+    "Incomplete Shift / Left Early",
+]
 
 
 def render_driver_directory_tab():
-  st.subheader("👥 Master Driver Directory & Attendance Accountability")
+    st.subheader("👥 Master Driver Directory & Attendance")
 
-  if (
-      "drivers_df" not in st.session_state
-      or st.session_state["drivers_df"] is None
-  ):
-    st.session_state["drivers_df"] = load_local_drivers()
+    drivers_df = st.session_state.get("drivers_df")
+    if drivers_df is None or drivers_df.empty:
+        drivers_df = load_local_drivers()
+        st.session_state["drivers_df"] = drivers_df
 
-  if (
-      "attendance_log_df" not in st.session_state
-      or st.session_state["attendance_log_df"] is None
-  ):
-    st.session_state["attendance_log_df"] = load_local_attendance_log()
+    att_log_df = st.session_state.get("attendance_log_df")
+    if att_log_df is None:
+        att_log_df = load_local_attendance_log()
+        st.session_state["attendance_log_df"] = att_log_df
 
-  drivers = st.session_state.get("drivers_df")
-  schedule_df = st.session_state.get("schedule_df")
-  active_user = st.session_state.get("user_name", "Admin")
-
-  st.caption(
-      "All team members (including OPS Manager, Dispatchers, Lead DAs, and DAs)"
-      " are managed here."
-  )
-
-  # 1. ADD NEW DRIVER FORM
-  with st.expander("➕ Add New Employee / Driver to Directory", expanded=False):
-    with st.form("add_driver_form", clear_on_submit=True):
-      col_d1, col_d2, col_d3 = st.columns(3)
-      new_d_name = col_d1.text_input("Full Name*")
-      new_d_trans = col_d2.text_input("Transporter ID")
-      new_d_phone = col_d3.text_input("Phone Number")
-
-      col_d4, col_d5, col_d6 = st.columns(3)
-      new_d_status = col_d4.selectbox(
-          "Employment Status",
-          options=["ACTIVE", "STANDBY", "ON LEAVE", "INACTIVE"],
-          index=0,
-      )
-      new_d_role = col_d5.selectbox(
-          "Primary Role",
-          options=[
-              "Driver Associate",
-              "Lead DA",
-              "Sweeper Specialist",
-              "Operations Manager",
-              "Dispatcher",
-          ],
-          index=0,
-      )
-      new_d_pref = col_d6.selectbox(
-          "Preferred Shift Pattern",
-          options=["Any / Flexible", "Front Half (Sun-Wed)", "Back Half (Wed-Sat)"],
-          index=0,
-      )
-
-      submit_add_d = st.form_submit_button(
-          "Add Driver to Master Roster", type="primary", use_container_width=True
-      )
-
-      if submit_add_d:
-        if new_d_name.strip():
-          new_d_row = {
-              "Driver Name": new_d_name.strip(),
-              "Transporter ID": new_d_trans.strip(),
-              "Phone Number": new_d_phone.strip(),
-              "Status": new_d_status,
-              "Role": new_d_role,
-              "Hire Date": str(pd.Timestamp.now().date()),
-              "Preferred Shifts": new_d_pref,
-              "Overall Score": 100.0,
-              "Standing": "Fantastic",
-          }
-          updated_drivers = pd.concat(
-              [drivers, pd.DataFrame([new_d_row])], ignore_index=True
-          ).reset_index(drop=True)
-          st.session_state["drivers_df"] = process_driver_data(updated_drivers)
-          safe_save_dataframe(st.session_state["drivers_df"], MASTER_DRIVERS_PATH)
-          load_local_drivers.clear()
-          log_dispatch_action(
-              f"Added driver '{new_d_name.strip()}' to Master Directory.",
-              username=active_user,
-          )
-          st.success(f"Added {new_d_name.strip()} to Master Driver Directory!")
-          st.rerun()
-
-  def on_drivers_change():
-    changes = st.session_state.get("drivers_directory_editor_state")
-    if changes and "drivers_df" in st.session_state:
-      for row_idx, col_changes in changes.get("edited_rows", {}).items():
-        for col_name, new_val in col_changes.items():
-          st.session_state["drivers_df"].at[row_idx, col_name] = new_val
-
-  st.data_editor(
-      drivers,
-      column_config={
-          "Driver Name": st.column_config.TextColumn(
-              "Driver Name", required=True
-          ),
-          "Status": st.column_config.SelectboxColumn(
-              "Status",
-              options=["ACTIVE", "STANDBY", "ON LEAVE", "INACTIVE"],
-              required=True,
-          ),
-          "Role": st.column_config.SelectboxColumn(
-              "Primary Role",
-              options=[
-                  "Driver Associate",
-                  "Lead DA",
-                  "Sweeper Specialist",
-                  "Operations Manager",
-                  "Dispatcher",
-              ],
-              required=True,
-          ),
-          "Preferred Shifts": st.column_config.SelectboxColumn(
-              "Shift Pattern",
-              options=["Any / Flexible", "Front Half (Sun-Wed)", "Back Half (Wed-Sat)"],
-              required=True,
-          ),
-          "Overall Score": st.column_config.NumberColumn(
-              "Scorecard Rank", format="%.2f"
-          ),
-      },
-      use_container_width=True,
-      num_rows="dynamic",
-      hide_index=True,
-      key="drivers_directory_editor_state",
-      on_change=on_drivers_change,
-  )
-
-  if st.button("💾 Save Master Driver Directory to Disk", type="primary"):
-    st.session_state["drivers_df"] = process_driver_data(
-        st.session_state["drivers_df"]
+    # KPI Calculations
+    total_drivers = len(drivers_df) if drivers_df is not None else 0
+    active_cnt = (
+        len(drivers_df[drivers_df["Status"].astype(str).str.upper() == "ACTIVE"])
+        if total_drivers > 0
+        else 0
     )
-    safe_save_dataframe(st.session_state["drivers_df"], MASTER_DRIVERS_PATH)
-    load_local_drivers.clear()
-    log_dispatch_action(
-        "Saved Master Driver Directory updates to disk.", username=active_user
-    )
-    st.success("Master Driver Roster saved permanently!")
-
-  # ---------------------------------------------------------
-  # 2. DEDICATED DRIVER ATTENDANCE & ACCOUNTABILITY LOG
-  # ---------------------------------------------------------
-  st.markdown("---")
-  st.subheader("📌 Daily Driver Attendance & Infraction Log")
-  st.caption(
-      "Quickly log call-outs, late arrivals, no-shows, or unexcused absences"
-      " without touching the daily roster."
-  )
-
-  attendance_log = st.session_state["attendance_log_df"]
-
-  with st.expander("🚨 Record New Attendance Infraction", expanded=True):
-    active_driver_options = (
-        sorted(drivers[drivers["Status"] == "ACTIVE"]["Driver Name"].tolist())
-        if "Status" in drivers.columns
-        else []
+    standby_cnt = (
+        len(drivers_df[drivers_df["Status"].astype(str).str.upper().isin(["STANDBY", "LEAVE", "ON LEAVE"])])
+        if total_drivers > 0
+        else 0
     )
 
-    with st.form("log_infraction_form", clear_on_submit=True):
-      col_i1, col_i2, col_i3 = st.columns(3)
-      sel_inf_driver = col_i1.selectbox(
-          "Driver Name*",
-          options=(
-              active_driver_options
-              if active_driver_options
-              else ["No Active Drivers"]
-          ),
-      )
-      sel_inf_type = col_i2.selectbox(
-          "Infraction Type*",
-          options=[
-              "LATE START",
-              "CALL-OUT (EXCUSED)",
-              "CALL-OUT (UNEXCUSED)",
-              "NO-SHOW",
-              "INCOMPLETE / LEFT EARLY",
-          ],
-      )
-      sel_inf_date = col_i3.date_input("Shift Date", value=pd.Timestamp.now())
+    recent_inf_cnt = 0
+    if att_log_df is not None and not att_log_df.empty and "Date" in att_log_df.columns:
+        parsed_dates = pd.to_datetime(att_log_df["Date"], errors="coerce")
+        cutoff_30 = pd.Timestamp.now() - pd.Timedelta(days=30)
+        recent_inf_cnt = int((parsed_dates.isna() | (parsed_dates >= cutoff_30)).sum())
 
-      inf_notes = st.text_input(
-          "Notes / Context",
-          placeholder="e.g. Called out 10 mins before wave launch via text",
-      )
+    sched_df = load_local_schedule()
+    att_metrics_df = calculate_driver_attendance_metrics(sched_df, att_log_df)
+    total_sched_shifts = (
+        int(att_metrics_df["Scheduled Shifts"].sum()) if not att_metrics_df.empty else 0
+    )
+    if total_sched_shifts > 0:
+        att_rate = max(0.0, 100.0 * (1.0 - (recent_inf_cnt / max(total_sched_shifts * 4, 1))))
+        att_rate_str = f"{att_rate:.1f}%"
+    else:
+        att_rate_str = "100.0%"
 
-      submit_infraction = st.form_submit_button(
-          "🚨 Commit Attendance Infraction to Log",
-          type="primary",
-          use_container_width=True,
-      )
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Active Drivers", active_cnt)
+    k2.metric("Standby / On Leave", standby_cnt)
+    k3.metric("30-Day Infractions", recent_inf_cnt)
+    k4.metric("Team Attendance Rate", att_rate_str)
 
-      if submit_infraction:
-        if sel_inf_driver and sel_inf_driver != "No Active Drivers":
-          new_inf_row = {
-              "Date": str(sel_inf_date),
-              "Driver Name": sel_inf_driver,
-              "Infraction Type": sel_inf_type,
-              "Logged By": active_user,
-              "Notes": inf_notes.strip(),
-          }
-          updated_att_log = pd.concat(
-              [attendance_log, pd.DataFrame([new_inf_row])], ignore_index=True
-          ).reset_index(drop=True)
-          st.session_state["attendance_log_df"] = updated_att_log
-          safe_save_dataframe(
-              st.session_state["attendance_log_df"], ATTENDANCE_LOG_PATH
-          )
-          load_local_attendance_log.clear()
+    st.markdown("---")
 
-          log_dispatch_action(
-              f"ATTENDANCE LOGGED: '{sel_inf_driver}' marked '{sel_inf_type}' on"
-              f" {sel_inf_date}.",
-              username=active_user,
-          )
-          st.success(f"Logged {sel_inf_type} for {sel_inf_driver}!")
-          st.rerun()
+    sub_nav = st.segmented_control(
+        "Driver Section",
+        options=["📇 Master Driver Roster", "⏱️ Attendance & Punctuality Log"],
+        default="📇 Master Driver Roster",
+        label_visibility="collapsed",
+        key="driver_dir_sub_nav",
+    )
+    if not sub_nav:
+        sub_nav = "📇 Master Driver Roster"
 
-  if not attendance_log.empty:
-    st.markdown("#### Historical Infraction Log Ledger")
-
-    def on_att_log_change():
-      changes = st.session_state.get("attendance_log_editor_state")
-      if changes and "attendance_log_df" in st.session_state:
-        for row_idx, col_changes in changes.get("edited_rows", {}).items():
-          for col_name, new_val in col_changes.items():
-            st.session_state["attendance_log_df"].at[row_idx, col_name] = (
-                new_val
+    # ---------------------------------------------------------
+    # 1. MASTER DRIVER DIRECTORY
+    # ---------------------------------------------------------
+    if sub_nav == "📇 Master Driver Roster":
+        hdr_l, hdr_r = st.columns([3, 1])
+        with hdr_l:
+            f_col1, f_col2 = st.columns([1, 2])
+            with f_col1:
+                status_filter = st.radio(
+                    "Status Filter",
+                    options=["ACTIVE", "STANDBY", "INACTIVE", "All"],
+                    horizontal=True,
+                    key="driver_status_filter",
+                )
+            with f_col2:
+                name_search = st.text_input(
+                    "Search Driver",
+                    placeholder="Filter by name, ID, or role...",
+                    key="driver_search_box",
+                ).strip().lower()
+        with hdr_r:
+            st.markdown("<div style='padding-top: 1.5rem;'></div>", unsafe_allow_html=True)
+            save_drivers_btn = st.button(
+                "💾 Save Directory",
+                type="primary",
+                use_container_width=True,
+                key="save_drivers_top_btn",
             )
 
-    st.data_editor(
-        st.session_state["attendance_log_df"],
-        use_container_width=True,
-        num_rows="dynamic",
-        hide_index=True,
-        key="attendance_log_editor_state",
-        on_change=on_att_log_change,
-    )
+        with st.expander("📤 Import Cortex Associate Roster", expanded=False):
+            up_drivers = st.file_uploader(
+                "Upload Master Drivers File", type=["xlsx", "xls", "csv"], key="drivers_file_up"
+            )
+            if up_drivers and st.button("Apply Imported Driver File", type="primary"):
+                raw_d = (
+                    pd.read_csv(up_drivers)
+                    if up_drivers.name.endswith(".csv")
+                    else pd.read_excel(up_drivers)
+                )
+                clean_d = process_driver_data(raw_d)
+                safe_save_dataframe(clean_d, MASTER_DRIVERS_PATH)
+                load_local_drivers.clear()
+                st.session_state["drivers_df"] = clean_d
+                st.toast(f"Imported {len(clean_d)} driver profiles!", icon="👥")
+                st.rerun()
 
-    if st.button("💾 Save Infraction Ledger Updates", type="secondary"):
-      safe_save_dataframe(
-          st.session_state["attendance_log_df"], ATTENDANCE_LOG_PATH
-      )
-      load_local_attendance_log.clear()
-      st.success("Infraction ledger saved!")
-      st.rerun()
+        disp_drivers = drivers_df.copy()
+        if status_filter != "All" and not disp_drivers.empty:
+            disp_drivers = disp_drivers[
+                disp_drivers["Status"].astype(str).str.upper() == status_filter
+            ]
+        if name_search and not disp_drivers.empty:
+            mask = disp_drivers.apply(
+                lambda r: name_search in " ".join(r.astype(str).values).lower(), axis=1
+            )
+            disp_drivers = disp_drivers[mask]
 
-  st.markdown("---")
-  st.subheader("📊 Driver Reliability & Attendance Ratings")
-  st.caption(
-      "Calculates total infractions recorded against weekly schedule"
-      " assignments."
-  )
+        driver_col_config = {
+            "Driver Name": st.column_config.TextColumn("Driver Name", width="medium"),
+            "Transporter ID": st.column_config.TextColumn("Transporter ID", width="medium"),
+            "Phone Number": st.column_config.TextColumn("Phone Number", width="medium"),
+            "Status": st.column_config.SelectboxColumn(
+                "Status", options=["ACTIVE", "STANDBY", "LEAVE", "INACTIVE"], width="small"
+            ),
+            "Role": st.column_config.SelectboxColumn(
+                "Role",
+                options=[
+                    "Driver Associate",
+                    "Step Van Driver",
+                    "Sweeper",
+                    "Dispatcher",
+                    "Operations Manager",
+                ],
+                width="medium",
+            ),
+            "Hire Date": st.column_config.TextColumn("Hire Date", width="small"),
+            "Preferred Shifts": st.column_config.SelectboxColumn(
+                "Schedule Preference",
+                options=["Any", "Front Half", "Back Half"],
+                width="small",
+            ),
+            "Overall Score": st.column_config.NumberColumn(
+                "Score", min_value=0.0, max_value=100.0, step=0.1, format="%.1f", width="small"
+            ),
+            "Standing": st.column_config.TextColumn("Standing", width="small"),
+        }
 
-  attendance_analytics_df = calculate_driver_attendance_metrics(
-      schedule_df, st.session_state["attendance_log_df"]
-  )
-  st.dataframe(attendance_analytics_df, use_container_width=True, hide_index=True)
+        can_add_rows = status_filter == "All" and not name_search
+        edited_drivers = st.data_editor(
+            disp_drivers,
+            column_config=driver_col_config,
+            num_rows="dynamic" if can_add_rows else "fixed",
+            use_container_width=True,
+            hide_index=True,
+            key="drivers_master_editor",
+        )
+
+        if save_drivers_btn:
+            if can_add_rows:
+                full_drivers = edited_drivers.copy()
+            else:
+                full_drivers = drivers_df.copy()
+                for _, row in edited_drivers.iterrows():
+                    tid = str(row.get("Transporter ID", "")).strip()
+                    dname = str(row.get("Driver Name", "")).strip()
+                    m = (
+                        (full_drivers["Transporter ID"].astype(str).str.strip() == tid)
+                        if tid
+                        else (full_drivers["Driver Name"].astype(str).str.strip() == dname)
+                    )
+                    if m.any():
+                        for col in edited_drivers.columns:
+                            full_drivers.loc[m, col] = row[col]
+
+            safe_save_dataframe(full_drivers, MASTER_DRIVERS_PATH)
+            load_local_drivers.clear()
+            st.session_state["drivers_df"] = full_drivers
+            log_dispatch_action(
+                "Updated Master Driver Directory.",
+                username=st.session_state.get("user_name"),
+            )
+            st.toast("Driver directory saved to Cloud Storage!", icon="💾")
+            st.rerun()
+
+    # ---------------------------------------------------------
+    # 2. ATTENDANCE & PUNCTUALITY LOG
+    # ---------------------------------------------------------
+    elif sub_nav == "⏱️ Attendance & Punctuality Log":
+        active_names = []
+        if drivers_df is not None and not drivers_df.empty:
+            act = drivers_df[drivers_df["Status"].astype(str).str.upper() == "ACTIVE"]
+            active_names = sorted(act["Driver Name"].dropna().astype(str).str.strip().unique().tolist())
+
+        with st.expander("➕ Log Attendance Infraction", expanded=True):
+            with st.form("log_attendance_form", clear_on_submit=True):
+                ac1, ac2, ac3 = st.columns(3)
+                with ac1:
+                    att_driver = (
+                        st.selectbox("Driver Name", options=active_names)
+                        if active_names
+                        else st.text_input("Driver Name")
+                    )
+                with ac2:
+                    att_type = st.selectbox("Infraction Type", options=INFRACTION_TYPES)
+                with ac3:
+                    att_date = st.date_input("Date", value=pd.Timestamp.now().date())
+
+                att_notes = st.text_input(
+                    "Notes / Context", placeholder="e.g., Arrived 22 mins after standup"
+                )
+
+                if st.form_submit_button("💾 Log Attendance Infraction", type="primary", use_container_width=True):
+                    if not str(att_driver).strip():
+                        st.error("Driver Name is required.")
+                    else:
+                        new_rec = pd.DataFrame(
+                            [
+                                {
+                                    "Date": str(att_date),
+                                    "Driver Name": str(att_driver).strip(),
+                                    "Infraction Type": str(att_type).strip(),
+                                    "Logged By": st.session_state.get("user_name", "Dispatch"),
+                                    "Notes": str(att_notes).strip(),
+                                }
+                            ]
+                        )
+                        updated_att = pd.concat([att_log_df, new_rec], ignore_index=True)
+                        safe_save_dataframe(updated_att, ATTENDANCE_LOG_PATH)
+                        load_local_attendance_log.clear()
+                        st.session_state["attendance_log_df"] = updated_att
+                        log_dispatch_action(
+                            f"Logged attendance infraction ({att_type}) for {att_driver}.",
+                            username=st.session_state.get("user_name"),
+                        )
+                        st.toast("Attendance infraction logged!", icon="⏱️")
+                        st.rerun()
+
+        if not att_metrics_df.empty:
+            st.markdown("### 📊 Driver Reliability Summary")
+            st.dataframe(att_metrics_df, use_container_width=True, hide_index=True)
+
+        st.markdown("### 📋 Attendance Infraction History")
+        if att_log_df is None or att_log_df.empty:
+            st.info("No attendance infractions recorded.")
+        else:
+            st.dataframe(att_log_df.iloc[::-1].reset_index(drop=True), use_container_width=True, hide_index=True)
