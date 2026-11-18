@@ -51,7 +51,7 @@ def get_scheduled_not_routed_summary(
   """
     Compares today's Master Driver Schedule against a list of routed driver/helper names
     (from Cortex export or active roster) and returns:
-      - unrouted_df: DataFrame of people scheduled today who have NO route assigned
+      - unrouted_df: DataFrame of Drivers/Helpers scheduled today who have NO route assigned
       - routed_unscheduled: List of names assigned a route who were NOT scheduled today
     """
   if schedule_df is None or schedule_df.empty:
@@ -88,7 +88,8 @@ def get_scheduled_not_routed_summary(
       not in ["nan", "none", "null", "unassigned", "unassigned sweeper"]
   ]
 
-  scheduled_statuses = [
+  # Shifts that count as working today (used to prevent false "routed but unscheduled" flags)
+  all_working_statuses = [
       "DRIVER",
       "HELPER",
       "OPS-AM",
@@ -99,29 +100,33 @@ def get_scheduled_not_routed_summary(
       "STANDBY",
   ]
 
+  # Only flag Drivers and Helpers/Sweepers in the unrouted alert (ignore OPS & On-Call)
+  unrouted_alert_statuses = ["DRIVER", "HELPER"]
+
   scheduled_people = []
   unrouted_records = []
 
   for _, row in schedule_df.iterrows():
     d_name = str(row.get("Driver Name", "")).strip()
     shift_val = str(row.get(day_col, "")).strip()
-    if not d_name or shift_val.upper() not in scheduled_statuses:
+    shift_upper = shift_val.upper()
+
+    if not d_name or shift_upper not in all_working_statuses:
       continue
 
     scheduled_people.append(d_name)
+
+    if shift_upper not in unrouted_alert_statuses:
+      continue
+
     is_routed = any(_names_match(d_name, r_name) for r_name in clean_routed)
 
     if not is_routed:
       norm_key = _normalize_person_name(d_name)
-      shift_upper = shift_val.upper()
       if shift_upper == "DRIVER":
         expected_note = "Scheduled Driver — Dropped/Unrouted (Sweeper / Rescue / VTO)"
-      elif shift_upper == "HELPER":
-        expected_note = "Scheduled Helper / Sweeper"
-      elif "OPS" in shift_upper:
-        expected_note = f"Scheduled {shift_val} (Desk / Launch Support)"
       else:
-        expected_note = "Scheduled On-Call / Standby"
+        expected_note = "Scheduled Helper / Sweeper"
 
       unrouted_records.append({
           "Driver Name": d_name,
@@ -142,12 +147,6 @@ def get_scheduled_not_routed_summary(
     shift_priority = {
         "DRIVER": 1,
         "HELPER": 2,
-        "ON-CALL": 3,
-        "ON CALL": 3,
-        "STANDBY": 3,
-        "OPS-AM": 4,
-        "OPS-PM": 4,
-        "OPS": 4,
     }
     unrouted_df["__prio"] = (
         unrouted_df["Scheduled Shift"]
