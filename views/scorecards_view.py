@@ -106,12 +106,20 @@ def render_scorecards_tab():
 
             if not weekly_df.empty:
                 weekly_df[score_col] = pd.to_numeric(weekly_df[score_col].astype(str).str.replace('%', ''), errors='coerce').fillna(0)
+                if 'Packages Delivered' in weekly_df.columns:
+                    weekly_df['Packages Delivered'] = pd.to_numeric(weekly_df['Packages Delivered'], errors='coerce').fillna(0)
                 medals = ["🥇 1st", "🥈 2nd", "🥉 3rd"]
 
                 if 'FICO' in weekly_df.columns:
                     weekly_df['FICO'] = pd.to_numeric(weekly_df['FICO'], errors='coerce').fillna(0)
-                    ranked_df = weekly_df[weekly_df['FICO'] > 0].sort_values(by=[score_col, 'Packages Delivered'], ascending=[False, False]).reset_index(drop=True)
-                    unranked_df = weekly_df[weekly_df['FICO'] <= 0].sort_values(by=[score_col, 'Packages Delivered'], ascending=[False, False]).reset_index(drop=True)
+                    ranked_df = weekly_df[weekly_df['FICO'] > 0].sort_values(
+                        by=[score_col, 'FICO', 'Packages Delivered'],
+                        ascending=[False, False, False]
+                    ).reset_index(drop=True)
+                    unranked_df = weekly_df[weekly_df['FICO'] <= 0].sort_values(
+                        by=[score_col, 'Packages Delivered'],
+                        ascending=[False, False]
+                    ).reset_index(drop=True)
 
                     ranked_df['Rank'] = [medals[i] if i < len(medals) else f"#{i+1}" for i in range(len(ranked_df))]
                     unranked_df['Rank'] = "Unranked (No FICO)"
