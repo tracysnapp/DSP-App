@@ -546,7 +546,6 @@ def load_local_schedule(year: int = None, week_num: int = None):
     week_path = get_week_schedule_path(year, week_num)
     df = load_dataframe_auto(week_path)
 
-  # Fallback to legacy single-file schedule if per-week file does not exist yet
   if df.empty:
     df = load_dataframe_auto(WEEKLY_SCHEDULE_PATH)
 
@@ -649,17 +648,6 @@ def save_weekly_targets_storage(targets_dict: dict):
 
 @st.cache_data(ttl=60, show_spinner=False)
 def load_standing_schedules_storage() -> dict:
-  """
-    Loads standing / recurring fixed-day schedules keyed by driver name (lowercase):
-    {
-      "tracy snapp": {
-          "driver_name": "Tracy Snapp",
-          "days": ["Sun", "Mon", "Tue", "Wed"],
-          "shift": "OPS-AM",
-          "lock_only_fixed_days": True
-      }
-    }
-    """
   data = load_json_auto(STANDING_SCHEDULES_PATH)
   return data if isinstance(data, dict) else {}
 
@@ -751,3 +739,38 @@ def save_driver_incident(
   safe_save_dataframe(updated_df, INCIDENTS_LOG_PATH)
   load_local_incidents_log.clear()
   return updated_df
+
+
+def update_driver_incident(
+    row_idx,
+    driver_name,
+    severity,
+    category,
+    infraction_detail,
+    van_bumper,
+    logged_by,
+    notes,
+):
+  """Updates an existing incident log entry."""
+  incidents_df = load_local_incidents_log()
+  if incidents_df is not None and not incidents_df.empty and 0 <= row_idx < len(incidents_df):
+    incidents_df.loc[row_idx, "Driver Name"] = str(driver_name).strip()
+    incidents_df.loc[row_idx, "Severity"] = str(severity).strip()
+    incidents_df.loc[row_idx, "Category"] = str(category).strip()
+    incidents_df.loc[row_idx, "Infraction / Detail"] = str(infraction_detail).strip()
+    incidents_df.loc[row_idx, "Van Bumper"] = str(van_bumper).strip()
+    incidents_df.loc[row_idx, "Logged By"] = str(logged_by).strip()
+    incidents_df.loc[row_idx, "Notes"] = str(notes).strip()
+    safe_save_dataframe(incidents_df, INCIDENTS_LOG_PATH)
+    load_local_incidents_log.clear()
+  return incidents_df
+
+
+def delete_driver_incident(row_idx):
+  """Deletes an incident log entry by row index."""
+  incidents_df = load_local_incidents_log()
+  if incidents_df is not None and not incidents_df.empty and 0 <= row_idx < len(incidents_df):
+    incidents_df = incidents_df.drop(index=row_idx).reset_index(drop=True)
+    safe_save_dataframe(incidents_df, INCIDENTS_LOG_PATH, allow_empty=True)
+    load_local_incidents_log.clear()
+  return incidents_df
