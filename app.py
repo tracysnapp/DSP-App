@@ -29,6 +29,7 @@ from views.closing_checklist import render_closing_checklist_tab
 from views.dispatch_roster import render_dispatch_roster_tab
 from views.driver_directory import render_driver_directory_tab
 from views.fleet_phones_view import render_fleet_tab
+from views.rescues_view import render_rescues_tab
 from views.scheduler_view import render_scheduler_tab
 from views.scorecards_view import render_scorecards_tab
 
@@ -261,6 +262,7 @@ st.title("🚛 JNA Daily Operations & Command Center")
 
 (
     tab_roster,
+    tab_rescues,
     tab_closing,
     tab_access,
     tab_scheduler,
@@ -269,6 +271,7 @@ st.title("🚛 JNA Daily Operations & Command Center")
     tab_scorecard,
 ) = st.tabs([
     "📋 Route Assignment & Roster",
+    "🚚 Rescue & Sweep Dispatch Tracker",
     "📝 Daily Closing & Debrief Checklist",
     "🔑 Gate & Access Codes",
     "📅 Master Driver Schedule",
@@ -279,6 +282,9 @@ st.title("🚛 JNA Daily Operations & Command Center")
 
 with tab_roster:
   render_dispatch_roster_tab(cortex_file, update_live_roster)
+
+with tab_rescues:
+  render_rescues_tab()
 
 with tab_closing:
   render_closing_checklist_tab()
