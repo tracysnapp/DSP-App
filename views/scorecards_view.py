@@ -106,10 +106,21 @@ def render_scorecards_tab():
 
             if not weekly_df.empty:
                 weekly_df[score_col] = pd.to_numeric(weekly_df[score_col].astype(str).str.replace('%', ''), errors='coerce').fillna(0)
-                weekly_df = weekly_df.sort_values(by=[score_col, 'Packages Delivered'], ascending=[False, False]).reset_index(drop=True)
-
                 medals = ["🥇 1st", "🥈 2nd", "🥉 3rd"]
-                weekly_df['Rank'] = [medals[i] if i < len(medals) else f"#{i+1}" for i in range(len(weekly_df))]
+
+                if 'FICO' in weekly_df.columns:
+                    weekly_df['FICO'] = pd.to_numeric(weekly_df['FICO'], errors='coerce').fillna(0)
+                    ranked_df = weekly_df[weekly_df['FICO'] > 0].sort_values(by=[score_col, 'Packages Delivered'], ascending=[False, False]).reset_index(drop=True)
+                    unranked_df = weekly_df[weekly_df['FICO'] <= 0].sort_values(by=[score_col, 'Packages Delivered'], ascending=[False, False]).reset_index(drop=True)
+
+                    ranked_df['Rank'] = [medals[i] if i < len(medals) else f"#{i+1}" for i in range(len(ranked_df))]
+                    unranked_df['Rank'] = "Unranked (No FICO)"
+
+                    weekly_df = pd.concat([ranked_df, unranked_df], ignore_index=True)
+                else:
+                    ranked_df = weekly_df.sort_values(by=[score_col, 'Packages Delivered'], ascending=[False, False]).reset_index(drop=True)
+                    ranked_df['Rank'] = [medals[i] if i < len(medals) else f"#{i+1}" for i in range(len(ranked_df))]
+                    weekly_df = ranked_df.copy()
 
                 disp_cols = ['Rank', 'Driver Name', score_col, 'Overall Standing', 'Packages Delivered', 'Times Rescued', 'Rescues Performed', 'Recognition_Eligible', 'FICO']
                 valid_cols = [c for c in disp_cols if c in weekly_df.columns]
@@ -118,7 +129,7 @@ def render_scorecards_tab():
 
                 st.markdown("---")
                 with st.expander("📢 Broadcast Week Leaderboard to Discord"):
-                    top_msg = generate_discord_top_drivers(weekly_df, week_str=selected_week)
+                    top_msg = generate_discord_top_drivers(ranked_df, week_str=selected_week)
                     st.code(top_msg, language="markdown")
                     
                     webhook_url = st.text_input("Discord Webhook URL", value=DISCORD_WEBHOOK_URL, type="password", key="sc_weekly_webhook")
