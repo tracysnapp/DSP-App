@@ -169,10 +169,10 @@ def _render_scheduled_not_routed_alert(
     with st.expander(header_title, expanded=True):
       if not unrouted_df.empty:
         st.info(
-            f"**{len(unrouted_df)} team member(s)** are scheduled for"
+            f"**{len(unrouted_df)} driver(s)/helper(s)** are scheduled for"
             f" **{today_date_label}** in the Master Schedule but do **not**"
-            " have a route assigned below (expect them for Sweeper/Rescue,"
-            " OPS Launch, On-Call, or VTO):"
+            " have a route assigned below (expect them for Sweeper/Rescue or"
+            " VTO):"
         )
         st.dataframe(unrouted_df, use_container_width=True, hide_index=True)
 
