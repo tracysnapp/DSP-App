@@ -1,8 +1,9 @@
-from datetime import datetime, timedelta
+import datetime
 import pandas as pd
 import streamlit as st
 from engine import (
     DISCORD_WEBHOOK_URL,
+    load_local_drivers,
     load_local_schedule,
     load_long_range_pto_storage,
     load_standing_schedules_storage,
@@ -20,1164 +21,392 @@ from modules.schedule import (
     send_discord_webhook,
 )
 
-
-def get_amazon_week_1_start(year: int) -> datetime:
-  if year == 2027:
-    return datetime(2027, 1, 3)
-  elif year == 2026:
-    return datetime(2025, 12, 28)
-
-  jan_4 = datetime(year, 1, 4)
-  return jan_4 - timedelta(days=(jan_4.weekday() + 1) % 7)
+SHIFT_OPTIONS = ["", "Driver", "Helper", "OPS-AM", "OPS-PM", "On-Call", "Off", "Rqst Off"]
+DAY_PREFIXES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
 
 
-def get_amazon_week_dates(year: int, week_num: int):
-  week_1_sun = get_amazon_week_1_start(year)
-  target_sun = week_1_sun + timedelta(weeks=week_num - 1)
-  return [target_sun + timedelta(days=i) for i in range(7)]
+def _get_amazon_week_info(ref_date: datetime.date):
+    """Calculates Amazon Sunday-Saturday week number and date headers."""
+    days_since_sunday = (ref_date.weekday() + 1) % 7
+    week_start = ref_date - datetime.timedelta(days=days_since_sunday)
+    week_end = week_start + datetime.timedelta(days=6)
 
-
-def get_current_amazon_week_info():
-  today = datetime.today()
-  current_year = today.year
-
-  w1_start = get_amazon_week_1_start(current_year)
-
-  if today < w1_start:
-    op_year = current_year - 1
-    w1_start = get_amazon_week_1_start(op_year)
-  else:
-    next_w1_start = get_amazon_week_1_start(current_year + 1)
-    if today >= next_w1_start:
-      op_year = current_year + 1
-      w1_start = next_w1_start
+    year_start = datetime.date(week_start.year, 1, 1)
+    first_sun_offset = (6 - year_start.weekday()) % 7
+    first_sunday = year_start + datetime.timedelta(days=first_sun_offset)
+    if week_start < first_sunday:
+        week_num = 1
     else:
-      op_year = current_year
+        week_num = ((week_start - first_sunday).days // 7) + 1
 
-  days_diff = (today - w1_start).days
-  week_num = (days_diff // 7) + 1
-  return op_year, week_num
-
-
-def build_blank_schedule_from_drivers(drivers_df, day_headers):
-  if drivers_df is None or drivers_df.empty:
-    return pd.DataFrame(
-        columns=["Driver Name"] + day_headers + ["Notes / Requests"]
-    )
-
-  active_drivers = (
-      drivers_df[
-          drivers_df["Status"].astype(str).str.strip().str.upper() == "ACTIVE"
-      ].copy()
-      if "Status" in drivers_df.columns
-      else drivers_df.copy()
-  )
-
-  init_sch = []
-  for _, row in active_drivers.iterrows():
-    full_name = str(row.get("Driver Name", "")).strip()
-    if not full_name:
-      continue
-    parts = full_name.split(" ", 1)
-    first_name = parts[0] if len(parts) > 1 else full_name
-    last_name = parts[1] if len(parts) > 1 else ""
-
-    driver_row = {
-        "Driver Name": (
-            f"{first_name} {last_name}".strip()
-            if (first_name or last_name)
-            else full_name
-        ),
-        "First Name": first_name,
-        "Last Name": last_name,
-        "Notes / Requests": "",
-    }
-    for dh in day_headers:
-      driver_row[dh] = ""
-
-    init_sch.append(driver_row)
-
-  return pd.DataFrame(init_sch)
+    day_dates = [week_start + datetime.timedelta(days=i) for i in range(7)]
+    day_headers = [d.strftime("%a %d %b") for d in day_dates]
+    range_str = f"{week_start.strftime('%d-%b')} to {week_end.strftime('%d-%b')}"
+    return week_start.year, week_num, day_dates, day_headers, range_str
 
 
 def render_scheduler_tab():
-  st.subheader("📅 JNAL Operations: Scheduling & Long-Range Calendar")
+    st.subheader("📅 Weekly Shift Scheduler, Standing Rules & PTO")
 
-  tab_weekly, tab_pto = st.tabs(
-      ["Weekly Shift Scheduler", "Long-Range PTO & Availability Calendar"]
-  )
-
-  drivers_df = st.session_state.get("drivers_df")
-  active_user = st.session_state.get("user_name", "Admin")
-
-  if "pto_df" not in st.session_state:
-    st.session_state["pto_df"] = load_long_range_pto_storage()
-
-  if "weekly_targets_dict" not in st.session_state:
-    st.session_state["weekly_targets_dict"] = load_weekly_targets_storage()
-
-  if "standing_schedules_dict" not in st.session_state:
-    st.session_state["standing_schedules_dict"] = (
-        load_standing_schedules_storage()
+    sub_nav = st.segmented_control(
+        "Scheduling Section",
+        options=["📆 Weekly Shift Builder", "🏖️ Long-Range PTO & Standing Schedules"],
+        default="📆 Weekly Shift Builder",
+        label_visibility="collapsed",
+        key="scheduler_sub_nav",
     )
+    if not sub_nav:
+        sub_nav = "📆 Weekly Shift Builder"
 
-  # ==========================================
-  # TAB 1: WEEKLY SHIFT SCHEDULER (AMAZON WEEKS 1-53)
-  # ==========================================
-  with tab_weekly:
-    c_date, c_info = st.columns([1, 2])
-    with c_date:
-      curr_op_year, curr_amazon_week = get_current_amazon_week_info()
+    drivers_df = st.session_state.get("drivers_df")
+    if drivers_df is None or drivers_df.empty:
+        drivers_df = load_local_drivers()
+        st.session_state["drivers_df"] = drivers_df
 
-      sel_year = st.selectbox(
-          "Operating Year",
-          options=[curr_op_year - 1, curr_op_year, curr_op_year + 1],
-          index=1,
-      )
+    pto_df = load_long_range_pto_storage()
+    standing_rules = load_standing_schedules_storage()
+    weekly_targets = load_weekly_targets_storage()
 
-      sel_amazon_week = st.number_input(
-          "Amazon Operating Week #",
-          min_value=1,
-          max_value=53,
-          value=curr_amazon_week,
-          step=1,
-      )
+    # ---------------------------------------------------------
+    # 1. WEEKLY SHIFT BUILDER
+    # ---------------------------------------------------------
+    if sub_nav == "📆 Weekly Shift Builder":
+        nav_c1, nav_c2, nav_c3 = st.columns([1, 2, 1])
+        if "sched_anchor_date" not in st.session_state:
+            st.session_state["sched_anchor_date"] = datetime.date.today()
 
-      week_datetime_objs = get_amazon_week_dates(
-          int(sel_year), int(sel_amazon_week)
-      )
-      week_dates = [dt.date() for dt in week_datetime_objs]
+        with nav_c1:
+            if st.button("⬅️ Previous Week", use_container_width=True):
+                st.session_state["sched_anchor_date"] -= datetime.timedelta(days=7)
+                st.rerun()
+        with nav_c2:
+            picked_date = st.date_input(
+                "Week Anchor Date",
+                value=st.session_state["sched_anchor_date"],
+                label_visibility="collapsed",
+            )
+            if picked_date != st.session_state["sched_anchor_date"]:
+                st.session_state["sched_anchor_date"] = picked_date
+                st.rerun()
+        with nav_c3:
+            if st.button("Next Week ➡️", use_container_width=True):
+                st.session_state["sched_anchor_date"] += datetime.timedelta(days=7)
+                st.rerun()
 
-      start_date = week_dates[0]
-      end_date = week_dates[6]
-
-      week_label = (
-          f"Amazon Week {sel_amazon_week} ({start_date.strftime('%d-%b')} to"
-          f" {end_date.strftime('%d-%b')})"
-      )
-      st.caption(f"**Cycle Window:** {week_label} *(Sun - Sat Operational)*")
-
-    with c_info:
-      st.markdown("### 🎯 Daily Route Targets & 15% Sweeper Buffer")
-      st.caption(
-          "Adjust expected route counts per day. The auto-scheduler adds a 15%"
-          " sweeper/helper buffer automatically."
-      )
-
-    day_keys = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
-    day_headers = [f"{d_date.strftime('%a %d %b')}" for d_date in week_dates]
-    day_key_to_header = dict(zip(day_keys, day_headers))
-
-    week_key_str = f"{int(sel_year)}-W{int(sel_amazon_week):02d}"
-    stored_week_targets = st.session_state["weekly_targets_dict"].get(
-        week_key_str, {}
-    )
-
-    default_targets = {
-        "Sun": 26,
-        "Mon": 25,
-        "Tue": 25,
-        "Wed": 28,
-        "Thu": 24,
-        "Fri": 24,
-        "Sat": 0,
-    }
-
-    target_cols = st.columns(7)
-    expected_routes_dict = {}
-    targets_changed = False
-
-    for i, d_key in enumerate(day_keys):
-      d_header = day_key_to_header[d_key]
-      default_val = stored_week_targets.get(
-          d_key, default_targets.get(d_key, 25)
-      )
-
-      with target_cols[i]:
-        new_val = st.number_input(
-            d_header,
-            min_value=0,
-            value=int(default_val),
-            key=f"target_route_{sel_year}_{sel_amazon_week}_{d_key}",
+        yr, wk_num, day_dates, day_headers, range_str = _get_amazon_week_info(
+            st.session_state["sched_anchor_date"]
         )
-        expected_routes_dict[d_header] = new_val
-        if new_val != default_val:
-          targets_changed = True
+        week_key = f"{yr}_W{wk_num:02d}"
 
-    if targets_changed:
-      if week_key_str not in st.session_state["weekly_targets_dict"]:
-        st.session_state["weekly_targets_dict"][week_key_str] = {}
-      for d_key in day_keys:
-        st.session_state["weekly_targets_dict"][week_key_str][d_key] = (
-            expected_routes_dict[day_key_to_header[d_key]]
+        st.markdown(f"### Amazon Week {wk_num} ({yr}) &bull; `{range_str}`")
+
+        # Expected Daily Route Targets
+        with st.expander("🎯 Expected Daily Route Targets (1-Week Forecast)", expanded=False):
+            saved_wk_targets = weekly_targets.get(week_key, {})
+            t_cols = st.columns(7)
+            new_targets = {}
+            for i, dh in enumerate(day_headers):
+                with t_cols[i]:
+                    default_val = int(saved_wk_targets.get(dh, saved_wk_targets.get(DAY_PREFIXES[i], 20)))
+                    new_targets[dh] = st.number_input(
+                        dh, min_value=0, max_value=100, value=default_val, step=1, key=f"tgt_{week_key}_{i}"
+                    )
+            if st.button("💾 Save Route Targets", type="primary"):
+                weekly_targets[week_key] = new_targets
+                save_weekly_targets_storage(weekly_targets)
+                st.toast("Weekly route targets saved!", icon="🎯")
+                st.rerun()
+        expected_routes_dict = weekly_targets.get(
+            week_key, {dh: 20 for dh in day_headers}
         )
-      save_weekly_targets_storage(st.session_state["weekly_targets_dict"])
 
-    loaded_key = st.session_state.get("loaded_week_key")
-    if (
-        "schedule_df" not in st.session_state
-        or st.session_state["schedule_df"] is None
-        or st.session_state["schedule_df"].empty
-        or loaded_key != week_key_str
-    ):
-      loaded_sch = load_local_schedule(int(sel_year), int(sel_amazon_week))
-      pto_data = st.session_state["pto_df"]
-
-      if loaded_sch.empty:
-        sch_df = build_blank_schedule_from_drivers(drivers_df, day_headers)
-      else:
-        sch_df = loaded_sch.copy()
-
-        # Sync active drivers list (remove inactive, add newly hired active drivers)
-        if (
-            drivers_df is not None
-            and not drivers_df.empty
-            and "Status" in drivers_df.columns
-        ):
-          active_df = drivers_df[
-              drivers_df["Status"].astype(str).str.strip().str.upper()
-              == "ACTIVE"
-          ]
-          active_names_map = {
-              str(n).strip().lower(): str(n).strip()
-              for n in active_df["Driver Name"].dropna()
-          }
-          if active_names_map:
-            sch_df["__dn_lower"] = (
-                sch_df["Driver Name"].astype(str).str.strip().str.lower()
-            )
-            sch_df = (
-                sch_df[sch_df["__dn_lower"].isin(active_names_map.keys())]
-                .drop(columns=["__dn_lower"])
-                .reset_index(drop=True)
-            )
-
-            existing_lower = set(
-                sch_df["Driver Name"].astype(str).str.strip().str.lower()
-            )
-            missing_rows = []
-            for dn_low, dn_orig in active_names_map.items():
-              if dn_low not in existing_lower:
-                parts = dn_orig.split(" ", 1)
-                new_r = {
-                    "Driver Name": dn_orig,
-                    "First Name": parts[0],
-                    "Last Name": parts[1] if len(parts) > 1 else "",
-                    "Notes / Requests": "",
-                }
-                for dh in day_headers:
-                  new_r[dh] = ""
-                missing_rows.append(new_r)
-            if missing_rows:
-              sch_df = pd.concat(
-                  [sch_df, pd.DataFrame(missing_rows)], ignore_index=True
-              )
-
-        # Align day columns to current selected week's dated headers
-        has_exact_week_cols = all(dh in sch_df.columns for dh in day_headers)
-        if not has_exact_week_cols:
-          for d_key, d_header in day_key_to_header.items():
-            if d_header not in sch_df.columns:
-              matching_old_col = next(
-                  (c for c in sch_df.columns if c.startswith(d_key)), None
-              )
-              if matching_old_col:
-                sch_df.drop(columns=[matching_old_col], inplace=True)
-              sch_df[d_header] = ""
-          sch_df["Notes / Requests"] = ""
-
-      if not sch_df.empty:
-        if (
-            "First Name" not in sch_df.columns
-            or "Last Name" not in sch_df.columns
-        ):
-          if "Driver Name" in sch_df.columns:
-            fn_list, ln_list = [], []
-            for val in sch_df["Driver Name"]:
-              name_str = str(val).strip()
-              if "," in name_str:
-                p = name_str.split(",", 1)
-                ln_list.append(p[0].strip())
-                fn_list.append(p[1].strip())
-              else:
-                p = name_str.split(" ", 1)
-                fn_list.append(p[0].strip())
-                ln_list.append(p[1].strip() if len(p) > 1 else "")
-            sch_df["First Name"] = fn_list
-            sch_df["Last Name"] = ln_list
-
-        if "Driver Name" not in sch_df.columns:
-          sch_df["Driver Name"] = (
-              sch_df["First Name"].astype(str)
-              + " "
-              + sch_df["Last Name"].astype(str)
-          ).str.strip()
-
-      if "Notes / Requests" not in sch_df.columns:
-        sch_df["Notes / Requests"] = ""
-      sch_df["Notes / Requests"] = (
-          sch_df["Notes / Requests"]
-          .fillna("")
-          .astype(str)
-          .replace(["nan", "NaN", "None", "<NA>"], "")
-      )
-
-      for dh in day_headers:
-        if dh not in sch_df.columns:
-          sch_df[dh] = ""
-        sch_df[dh] = sch_df[dh].fillna("").astype(str)
-        sch_df.loc[
-            sch_df[dh]
+        # Load or Initialize Week Schedule
+        raw_sched = load_local_schedule(year=yr, week_num=wk_num)
+        active_drivers = (
+            drivers_df[drivers_df["Status"].astype(str).str.upper() != "INACTIVE"][
+                "Driver Name"
+            ]
+            .dropna()
+            .astype(str)
             .str.strip()
-            .str.lower()
-            .isin(["none", "nan", "nat", "<na>"]),
-            dh,
-        ] = ""
-
-      # Apply Long-Range PTO & Availability constraints
-      if not pto_data.empty and not sch_df.empty:
-        for idx, d_row in sch_df.iterrows():
-          fn = str(d_row.get("First Name", "")).strip()
-          ln = str(d_row.get("Last Name", "")).strip()
-          dn = str(d_row.get("Driver Name", "")).strip()
-
-          d_full = f"{fn} {ln}".strip().lower() if (fn or ln) else dn.lower()
-          d_reverse = (
-              f"{ln}, {fn}".strip().lower() if (fn or ln) else dn.lower()
-          )
-
-          notes_list = []
-          for _, pto_row in pto_data.iterrows():
-            pto_name = str(pto_row.get("Driver Name", "")).strip().lower()
-
-            if pto_name and (
-                pto_name == d_full
-                or pto_name == d_reverse
-                or (dn and pto_name == dn.lower())
-                or (d_full and pto_name in d_full)
-            ):
-              try:
-                p_start = pd.to_datetime(pto_row["Start Date"]).date()
-                p_end = pd.to_datetime(pto_row["End Date"]).date()
-                cat = str(pto_row.get("Category", ""))
-                note = str(pto_row.get("Reason / Notes", ""))
-
-                overlaps_week = False
-                for day_idx, d_date in enumerate(week_dates):
-                  header_name = day_headers[day_idx]
-                  day_name_str = day_keys[day_idx]
-
-                  if p_start <= d_date <= p_end:
-                    overlaps_week = True
-                    if "No Sundays" in cat and day_name_str == "Sun":
-                      sch_df.at[idx, header_name] = "Rqst Off"
-                    elif cat in [
-                        "Approved PTO",
-                        "Unpaid Leave",
-                        "Appointment / Partial Off",
-                        "Other Constraint",
-                    ]:
-                      sch_df.at[idx, header_name] = "Rqst Off"
-
-                if overlaps_week:
-                  notes_list.append(
-                      f"{cat} ({p_start.strftime('%d-%b')} to"
-                      f" {p_end.strftime('%d-%b')}): {note}"
-                  )
-              except Exception:
-                pass
-
-          if notes_list:
-            existing_notes = str(d_row.get("Notes / Requests", "")).strip()
-            combined = " | ".join(notes_list)
-            if combined not in existing_notes:
-              sch_df.at[idx, "Notes / Requests"] = (
-                  f"{existing_notes} | {combined}".strip(" |")
-                  if existing_notes
-                  else combined
-              )
-
-      # Apply Standing / Fixed Weekly Schedules to blank cells (respecting Rqst Off)
-      standing_rules = st.session_state.get("standing_schedules_dict", {})
-      if standing_rules and not sch_df.empty:
-        sch_df = apply_standing_schedules_to_df(
-            sch_df, day_headers, standing_rules, overwrite_existing=False
+            .unique()
+            .tolist()
+            if drivers_df is not None and not drivers_df.empty
+            else []
         )
 
-      ordered_cols = ["Driver Name"] + day_headers + ["Notes / Requests"]
-      for c in ["First Name", "Last Name"]:
-        if c in sch_df.columns and c not in ordered_cols:
-          ordered_cols.append(c)
+        sched_rows = []
+        existing_lookup = {}
+        if raw_sched is not None and not raw_sched.empty and "Driver Name" in raw_sched.columns:
+            for _, r in raw_sched.iterrows():
+                existing_lookup[str(r["Driver Name"]).strip().lower()] = r
 
-      existing_ordered = [c for c in ordered_cols if c in sch_df.columns]
-      sch_df = sch_df[existing_ordered]
-
-      sort_cols = [
-          c
-          for c in ["First Name", "Last Name", "Driver Name"]
-          if c in sch_df.columns
-      ]
-      if sort_cols:
-        st.session_state["schedule_df"] = sch_df.sort_values(
-            by=sort_cols, ascending=True
-        ).reset_index(drop=True)
-      else:
-        st.session_state["schedule_df"] = sch_df.copy()
-
-      st.session_state["loaded_week_key"] = week_key_str
-
-    def on_schedule_change():
-      changes = st.session_state.get("weekly_schedule_editor_state")
-      if changes and "schedule_df" in st.session_state:
-        visible_indices = st.session_state.get("visible_schedule_indices", [])
-        for vis_idx, col_changes in changes.get("edited_rows", {}).items():
-          actual_idx = (
-              visible_indices[int(vis_idx)]
-              if int(vis_idx) < len(visible_indices)
-              else int(vis_idx)
-          )
-          for col_name, new_val in col_changes.items():
-            if col_name in st.session_state["schedule_df"].columns:
-              clean_val = (
-                  ""
-                  if new_val is None
-                  or str(new_val).strip().lower() in ["none", "nan", "nat"]
-                  else str(new_val).strip()
-              )
-              st.session_state["schedule_df"].at[actual_idx, col_name] = (
-                  clean_val
-              )
-
-    # ==========================================
-    # LIVE COVERAGE & DAILY ROLE BREAKDOWN
-    # ==========================================
-    st.markdown("### 📊 Live Coverage & Daily Role Breakdown (with +15% Buffer)")
-    metrics_cols = st.columns(7)
-
-    work_shifts = ["Driver", "Helper", "OPS-AM", "OPS-PM"]
-    sch_ref_metrics = st.session_state["schedule_df"]
-
-    for i, d_header in enumerate(day_headers):
-      if d_header in sch_ref_metrics.columns:
-        col_vals = sch_ref_metrics[d_header].astype(str).str.strip()
-        total_working = int(col_vals.isin(work_shifts).sum())
-        drv_cnt = int((col_vals == "Driver").sum())
-        hlp_cnt = int((col_vals == "Helper").sum())
-        ops_cnt = int(col_vals.isin(["OPS-AM", "OPS-PM"]).sum())
-      else:
-        total_working = drv_cnt = hlp_cnt = ops_cnt = 0
-
-      base_target = expected_routes_dict.get(d_header, 0)
-      buffered_target = (
-          int((base_target * 1.15) + 0.99) if base_target > 0 else 0
-      )
-      delta = total_working - buffered_target
-
-      with metrics_cols[i]:
-        st.metric(
-            label=d_header,
-            value=total_working,
-            delta=delta,
-            delta_color="normal",
-        )
-        st.caption(
-            f"🚐 **{drv_cnt}** Drv | 🦺 **{hlp_cnt}** Hlp | 🎧 **{ops_cnt}** OPS"
+        all_names = sorted(
+            set(active_drivers + [str(r["Driver Name"]).strip() for _, r in raw_sched.iterrows()])
+            if raw_sched is not None and not raw_sched.empty
+            else set(active_drivers),
+            key=lambda n: n.split()[0].upper() if n else "",
         )
 
-    st.markdown("---")
+        for name in all_names:
+            if not name:
+                continue
+            row_dict = {"Driver Name": name}
+            src_row = existing_lookup.get(name.lower())
+            for i, dh in enumerate(day_headers):
+                prefix = DAY_PREFIXES[i]
+                val = ""
+                if src_row is not None:
+                    if dh in src_row and pd.notna(src_row[dh]):
+                        val = str(src_row[dh]).strip()
+                    elif prefix in src_row and pd.notna(src_row[prefix]):
+                        val = str(src_row[prefix]).strip()
+                if val.lower() in ["nan", "none"]:
+                    val = ""
 
-    # ==========================================
-    # OVERTIME WARNING BADGE (> 4 SHIFTS / > 40 HRS)
-    # ==========================================
-    existing_day_cols = [c for c in day_headers if c in sch_ref_metrics.columns]
-    ot_drivers = []
-    if not sch_ref_metrics.empty and existing_day_cols:
-      shift_counts = sch_ref_metrics[existing_day_cols].isin(work_shifts).sum(
-          axis=1
-      )
-      ot_mask = shift_counts > 4
-      for idx_ot in sch_ref_metrics[ot_mask].index:
-        d_name_ot = sch_ref_metrics.at[idx_ot, "Driver Name"]
-        cnt_ot = int(shift_counts.at[idx_ot])
-        est_hrs = cnt_ot * 10
-        ot_drivers.append(f"**{d_name_ot}** ({cnt_ot} shifts / ~{est_hrs} hrs)")
+                # Overlay approved Long-Range PTO
+                if pto_df is not None and not pto_df.empty:
+                    d_pto = pto_df[
+                        pto_df["Driver Name"].astype(str).str.strip().str.lower() == name.lower()
+                    ]
+                    for _, p_row in d_pto.iterrows():
+                        try:
+                            s_dt = pd.to_datetime(p_row["Start Date"]).date()
+                            e_dt = pd.to_datetime(p_row["End Date"]).date()
+                            if s_dt <= day_dates[i] <= e_dt:
+                                val = "Rqst Off"
+                                break
+                        except Exception:
+                            continue
 
-    if ot_drivers:
-      st.warning(
-          f"⏱️ **Overtime Alert ({len(ot_drivers)} team member(s) over 4 shifts"
-          f" / 40 hrs):** {', '.join(ot_drivers)}"
-      )
+                row_dict[dh] = val
+            sched_rows.append(row_dict)
 
-    # ==========================================
-    # CONFLICT ALERT BANNER
-    # ==========================================
-    conflict_count = 0
-    conflict_details = []
-    if (
-        "schedule_df" in st.session_state
-        and not st.session_state["schedule_df"].empty
-    ):
-      sch_check = st.session_state["schedule_df"]
-      for _, r_item in sch_check.iterrows():
-        notes_str = str(r_item.get("Notes / Requests", "")).strip()
-        if notes_str and notes_str.lower() != "nan":
-          d_name = r_item.get("Driver Name", "Driver")
-          for dh in day_headers:
-            shift_val = str(r_item.get(dh, "")).strip()
-            if shift_val in work_shifts:
-              conflict_count += 1
-              conflict_details.append(
-                  f"• **{d_name}** scheduled on **{dh}** ({shift_val}) despite"
-                  f" active calendar constraint: *{notes_str[:70]}*"
-              )
+        week_sched_df = pd.DataFrame(sched_rows)
+        if not week_sched_df.empty:
+            week_sched_df = apply_standing_schedules_to_df(
+                week_sched_df, day_headers, standing_rules, overwrite_existing=False
+            )
 
-    if conflict_count > 0:
-      with st.expander(
-          f"⚠️ **Schedule Conflict Alert: {conflict_count} potential overlap(s)"
-          " detected with calendar constraints**",
-          expanded=True,
-      ):
-        st.warning(
-            "Review the drivers scheduled below who have active long-range PTO"
-            " or availability notes for the week:"
+        # KPI Summary Bar
+        work_codes = ["Driver", "Helper", "OPS-AM", "OPS-PM"]
+        total_shifts = (
+            sum(week_sched_df[dh].isin(work_codes).sum() for dh in day_headers)
+            if not week_sched_df.empty
+            else 0
         )
-        for cd in conflict_details[:5]:
-          st.markdown(cd)
-        if len(conflict_details) > 5:
-          st.caption(f"...and {len(conflict_details) - 5} more conflicts.")
+        ot_drivers = 0
+        if not week_sched_df.empty:
+            for _, r in week_sched_df.iterrows():
+                if sum(str(r.get(dh, "")).strip() in work_codes for dh in day_headers) > 4:
+                    ot_drivers += 1
 
-    # ==========================================
-    # ROLE & AVAILABILITY FILTER TOGGLES
-    # ==========================================
-    f_col1, f_col2 = st.columns([2, 2])
-    with f_col1:
-      schedule_view_filter = st.selectbox(
-          "🔍 Filter Schedule View",
-          options=[
-              "Show All Active Drivers",
-              "Show Scheduled Only (Drivers/Helpers/OPS)",
-              "Show Available / Unscheduled Only",
-              "Show Fixed / Standing Schedule Only",
-              "Show Over 4 Shifts (OT Risk)",
-              "Show with Calendar Notes / Requests",
-          ],
-          key="sched_view_filter_sel",
-      )
-    with f_col2:
-      day_quick_focus = st.selectbox(
-          "📅 Highlight Specific Day Column",
-          options=["None (Show All Days)"] + day_headers,
-          key="sched_day_focus_sel",
-      )
+        sk1, sk2, sk3 = st.columns(3)
+        sk1.metric("Rostered Team Size", len(week_sched_df))
+        sk2.metric("Total Scheduled Shifts", int(total_shifts))
+        sk3.metric("Overtime Risk (>4 Shifts)", ot_drivers)
 
-    # ==========================================
-    # STANDING / RECURRING FIXED WEEKLY SCHEDULES
-    # ==========================================
-    standing_rules = st.session_state.get("standing_schedules_dict", {})
-    with st.expander(
-        f"📌 Standing / Fixed Weekly Schedules ({len(standing_rules)} Active"
-        " Rules — Force-Schedule OPS, Dispatchers & Part-Time DAs)",
-        expanded=False,
-    ):
-      st.caption(
-          "Lock team members (e.g., OPS Manager, Dispatchers, or part-time"
-          " Tue/Wed drivers) to fixed days every week. Standing rules"
-          " auto-populate every week and are protected during auto-scheduling."
-      )
+        # Action Bar
+        act1, act2, act3 = st.columns([1.2, 1.2, 1])
+        with act1:
+            if st.button("⚡ Auto-Fill Schedule", use_container_width=True):
+                prev_date = st.session_state["sched_anchor_date"] - datetime.timedelta(days=7)
+                p_yr, p_wk, _, _, _ = _get_amazon_week_info(prev_date)
+                prev_df = load_local_schedule(year=p_yr, week_num=p_wk)
 
-      all_schedule_drivers_standing = (
-          st.session_state["schedule_df"]["Driver Name"]
-          .dropna()
-          .unique()
-          .tolist()
-          if "schedule_df" in st.session_state
-          and not st.session_state["schedule_df"].empty
-          else []
-      )
+                auto_df = auto_generate_pattern_weekly_schedule(
+                    schedule_df=week_sched_df,
+                    day_headers=day_headers,
+                    expected_routes_dict=expected_routes_dict,
+                    drivers_df=drivers_df,
+                    prev_week_schedule_df=prev_df,
+                    standing_rules_dict=standing_rules,
+                )
+                save_weekly_schedule_to_storage(auto_df, year=yr, week_num=wk_num)
+                st.toast("Auto-generated weekly schedule!", icon="⚡")
+                st.rerun()
+        with act2:
+            if st.button("🧹 Clear Non-PTO Shifts", use_container_width=True):
+                cleared = week_sched_df.copy()
+                for dh in day_headers:
+                    cleared[dh] = cleared[dh].apply(lambda v: v if v == "Rqst Off" else "")
+                save_weekly_schedule_to_storage(cleared, year=yr, week_num=wk_num)
+                st.toast("Cleared non-PTO shifts.", icon="🧹")
+                st.rerun()
+        with act3:
+            save_sched_btn = st.button(
+                "💾 Save Weekly Schedule", type="primary", use_container_width=True
+            )
 
-      st_c1, st_c2, st_c3 = st.columns([2, 2, 1])
-      with st_c1:
-        fix_driver_sel = st.selectbox(
-            "Select Team Member",
-            options=all_schedule_drivers_standing,
-            key="fix_drv_sel",
-        )
-      with st_c2:
-        fix_days_sel = st.multiselect(
-            "Fixed Days of Week",
-            options=day_keys,
-            default=["Tue", "Wed"],
-            key="fix_days_sel",
-        )
-      with st_c3:
-        fix_shift_sel = st.selectbox(
-            "Fixed Shift",
-            options=[
-                "Driver",
-                "Helper",
-                "OPS-AM",
-                "OPS-PM",
-                "On-Call",
-                "Off",
-            ],
-            index=0,
-            key="fix_shift_sel",
-        )
+        if not week_sched_df.empty:
+            week_sched_df["Total Shifts"] = week_sched_df.apply(
+                lambda r: sum(str(r.get(dh, "")).strip() in work_codes for dh in day_headers),
+                axis=1,
+            )
+            week_sched_df["OT Alert"] = week_sched_df["Total Shifts"].apply(
+                lambda cnt: "⚠️ OT (>40h)" if cnt > 4 else ""
+            )
 
-      fix_lock_strict = st.checkbox(
-          "Lock strictly to ONLY these fixed days (do NOT auto-assign extra"
-          " days — recommended for part-time 2-day DAs & fixed OPS/Dispatch)",
-          value=True,
-          key="fix_lock_strict_chk",
-      )
-
-      btn_f1, btn_f2 = st.columns([1, 2])
-      with btn_f1:
-        if st.button(
-            "💾 Save & Apply Standing Rule",
-            type="primary",
-            key="btn_save_standing_rule",
-        ):
-          if not fix_driver_sel:
-            st.warning("Select a team member first.")
-          elif not fix_days_sel:
-            st.warning("Select at least one day of the week.")
-          else:
-            dn_key = str(fix_driver_sel).strip().lower()
-            st.session_state["standing_schedules_dict"][dn_key] = {
-                "driver_name": str(fix_driver_sel).strip(),
-                "days": list(fix_days_sel),
-                "shift": str(fix_shift_sel).strip(),
-                "lock_only_fixed_days": bool(fix_lock_strict),
+            col_cfg = {
+                "Driver Name": st.column_config.TextColumn("Driver Name", disabled=True, width="medium"),
+                "Total Shifts": st.column_config.NumberColumn("Shifts", disabled=True, width="small"),
+                "OT Alert": st.column_config.TextColumn("Status", disabled=True, width="small"),
             }
-            save_standing_schedules_storage(
-                st.session_state["standing_schedules_dict"]
+            for dh in day_headers:
+                col_cfg[dh] = st.column_config.SelectboxColumn(dh, options=SHIFT_OPTIONS, width="small")
+
+            edited_sched = st.data_editor(
+                week_sched_df,
+                column_config=col_cfg,
+                use_container_width=True,
+                hide_index=True,
+                key=f"sched_editor_{week_key}",
             )
 
-            # Immediately apply to the active week's grid
-            st.session_state["schedule_df"] = apply_standing_schedules_to_df(
-                st.session_state["schedule_df"],
-                day_headers,
-                st.session_state["standing_schedules_dict"],
-                overwrite_existing=True,
+            if save_sched_btn:
+                save_cols = ["Driver Name"] + day_headers
+                save_weekly_schedule_to_storage(edited_sched[save_cols], year=yr, week_num=wk_num)
+                log_dispatch_action(
+                    f"Saved weekly schedule for {week_key}.",
+                    username=st.session_state.get("user_name"),
+                )
+                st.toast(f"Schedule for Week {wk_num} saved!", icon="💾")
+                st.rerun()
+
+            with st.expander("📣 Discord Schedule Announcement Generator", expanded=False):
+                discord_txt = generate_discord_schedule(edited_sched, week_str=range_str)
+                edited_discord = st.text_area("Discord Message Preview", value=discord_txt, height=260)
+                wh_url = st.text_input("Discord Webhook URL", value=DISCORD_WEBHOOK_URL, type="password")
+                if st.button("🚀 Publish Schedule to Discord", type="primary"):
+                    ok, msg = send_discord_webhook(wh_url, edited_discord)
+                    if ok:
+                        st.toast(msg, icon="📅")
+                    else:
+                        st.error(msg)
+
+    # ---------------------------------------------------------
+    # 2. LONG-RANGE PTO & STANDING SCHEDULES
+    # ---------------------------------------------------------
+    elif sub_nav == "🏖️ Long-Range PTO & Standing Schedules":
+        c_left, c_right = st.columns(2)
+
+        with c_left:
+            st.markdown("### 🏖️ Long-Range Time-Off / PTO Tracker")
+            with st.form("add_pto_form", clear_on_submit=True):
+                driver_names = (
+                    sorted(drivers_df["Driver Name"].dropna().unique().tolist())
+                    if drivers_df is not None and not drivers_df.empty
+                    else []
+                )
+                pto_driver = (
+                    st.selectbox("Driver Name", options=driver_names)
+                    if driver_names
+                    else st.text_input("Driver Name")
+                )
+                d1, d2 = st.columns(2)
+                with d1:
+                    s_date = st.date_input("Start Date", value=datetime.date.today())
+                with d2:
+                    e_date = st.date_input("End Date", value=datetime.date.today())
+                pto_cat = st.selectbox("Category", options=["PTO / Vacation", "Unpaid Time Off", "Medical Leave", "Military"])
+                pto_notes = st.text_input("Notes")
+
+                if st.form_submit_button("➕ Add Time-Off Request", type="primary", use_container_width=True):
+                    if e_date < s_date:
+                        st.error("End Date cannot be earlier than Start Date.")
+                    else:
+                        new_pto = pd.DataFrame(
+                            [
+                                {
+                                    "Driver Name": str(pto_driver).strip(),
+                                    "Start Date": str(s_date),
+                                    "End Date": str(e_date),
+                                    "Category": pto_cat,
+                                    "Reason / Notes": pto_notes,
+                                }
+                            ]
+                        )
+                        updated_pto = pd.concat([pto_df, new_pto], ignore_index=True)
+                        save_long_range_pto_storage(updated_pto)
+                        st.toast("Time-off request saved!", icon="🏖️")
+                        st.rerun()
+
+            edited_pto = st.data_editor(
+                pto_df,
+                num_rows="dynamic",
+                use_container_width=True,
+                hide_index=True,
+                key="pto_table_editor",
             )
-            log_dispatch_action(
-                f"Saved standing schedule rule for {fix_driver_sel}:"
-                f" {', '.join(fix_days_sel)} as {fix_shift_sel}.",
-                username=active_user,
+            if st.button("💾 Save PTO Table Edits", use_container_width=True):
+                save_long_range_pto_storage(edited_pto)
+                st.toast("PTO log updated!", icon="💾")
+                st.rerun()
+
+        with c_right:
+            st.markdown("### 🔒 Standing / Fixed Weekly Schedule Rules")
+            st.caption(
+                "Force-assign recurring shifts (e.g., OPS Manager, Dispatchers, or fixed-day drivers) before auto-scheduling."
             )
-            st.success(
-                f"Saved standing schedule for {fix_driver_sel} and applied to"
-                f" {week_label}!"
-            )
-            st.rerun()
+            with st.form("standing_rule_form"):
+                driver_names = (
+                    sorted(drivers_df["Driver Name"].dropna().unique().tolist())
+                    if drivers_df is not None and not drivers_df.empty
+                    else []
+                )
+                rule_driver = (
+                    st.selectbox("Select Team Member", options=driver_names, key="rule_driver_sel")
+                    if driver_names
+                    else st.text_input("Team Member Name")
+                )
+                rule_days = st.multiselect("Fixed Working Days", options=DAY_PREFIXES)
+                rule_shift = st.selectbox(
+                    "Assigned Shift Code", options=["Driver", "Helper", "OPS-AM", "OPS-PM", "On-Call"]
+                )
+                lock_only = st.checkbox(
+                    "Lock strictly to these fixed days (do not auto-schedule extra days)",
+                    value=True,
+                )
 
-      if standing_rules:
-        st.markdown("#### Active Standing Rules")
-        rules_rows = []
-        for dn_key, r_cfg in standing_rules.items():
-          rules_rows.append({
-              "Team Member": r_cfg.get("driver_name", dn_key),
-              "Fixed Days": ", ".join(r_cfg.get("days", [])),
-              "Assigned Shift": r_cfg.get("shift", ""),
-              "Strict Lock (No Extra Auto-Days)": (
-                  "Yes (Fixed Only)"
-                  if r_cfg.get("lock_only_fixed_days", True)
-                  else "No (Can Top-Up)"
-              ),
-          })
-        st.dataframe(
-            pd.DataFrame(rules_rows), use_container_width=True, hide_index=True
-        )
+                if st.form_submit_button("💾 Save Standing Rule", type="primary", use_container_width=True):
+                    if rule_driver and rule_days:
+                        standing_rules[str(rule_driver).strip().lower()] = {
+                            "display_name": str(rule_driver).strip(),
+                            "days": rule_days,
+                            "shift": rule_shift,
+                            "lock_only_fixed_days": lock_only,
+                        }
+                        save_standing_schedules_storage(standing_rules)
+                        st.toast(f"Saved standing schedule for {rule_driver}!", icon="🔒")
+                        st.rerun()
+                    else:
+                        st.error("Select a team member and at least one day.")
 
-        del_c1, del_c2 = st.columns([2, 1])
-        with del_c1:
-          rule_to_remove = st.selectbox(
-              "Remove Standing Rule",
-              options=["Select to remove..."]
-              + [
-                  r_cfg.get("driver_name", k)
-                  for k, r_cfg in standing_rules.items()
-              ],
-              key="del_standing_rule_sel",
-          )
-        with del_c2:
-          st.markdown("<br>", unsafe_allow_html=True)
-          if (
-              rule_to_remove != "Select to remove..."
-              and st.button("🗑️ Delete Rule", key="btn_del_standing_rule")
-          ):
-            rem_key = str(rule_to_remove).strip().lower()
-            if rem_key in st.session_state["standing_schedules_dict"]:
-              del st.session_state["standing_schedules_dict"][rem_key]
-              save_standing_schedules_storage(
-                  st.session_state["standing_schedules_dict"]
-              )
-              log_dispatch_action(
-                  f"Deleted standing schedule rule for {rule_to_remove}.",
-                  username=active_user,
-              )
-              st.success(f"Removed standing rule for {rule_to_remove}.")
-              st.rerun()
+            if standing_rules:
+                rules_list = [
+                    {
+                        "Team Member": v.get("display_name", k.title()),
+                        "Days": ", ".join(v.get("days", [])),
+                        "Shift": v.get("shift", ""),
+                        "Locked Only": "Yes" if v.get("lock_only_fixed_days", True) else "No",
+                        "_key": k,
+                    }
+                    for k, v in standing_rules.items()
+                ]
+                rules_df = pd.DataFrame(rules_list)
+                st.dataframe(
+                    rules_df[["Team Member", "Days", "Shift", "Locked Only"]],
+                    use_container_width=True,
+                    hide_index=True,
+                )
 
-    # ==========================================
-    # AUTO-SCHEDULER (TWO-PASS MINIMUM 2 SHIFTS, ROLE-AWARE & STANDING LOCKS)
-    # ==========================================
-    with st.expander(
-        "🤖 Advanced Auto-Scheduler (Min 2 Shifts Guarantee, Standing Locks &"
-        " +15% Buffer)",
-        expanded=False,
-    ):
-      st.caption(
-          "Applies Standing Rules first, guarantees every available team member"
-          " gets at least 2 shifts/week (Pass 1), then tops up top-ranked"
-          " drivers to 4 shifts/week (Pass 2) within the +15% buffered target."
-      )
-
-      auto_c1, auto_c2, _ = st.columns([1, 1, 2])
-      with auto_c1:
-        clear_existing_auto = st.checkbox(
-            "Reset non-PTO/non-standing shifts before generating",
-            value=False,
-            key="chk_clear_before_auto",
-        )
-      with auto_c2:
-        max_consec_days = st.number_input(
-            "Max Consecutive Days",
-            min_value=4,
-            max_value=6,
-            value=5,
-            step=1,
-            key="num_max_consec_days",
-        )
-
-      if st.button(
-          "🚀 Run Buffered Auto-Scheduler",
-          type="primary",
-          key="btn_run_pattern_auto",
-      ):
-        prev_year = (
-            int(sel_year) if int(sel_amazon_week) > 1 else int(sel_year) - 1
-        )
-        prev_week = (
-            int(sel_amazon_week) - 1 if int(sel_amazon_week) > 1 else 52
-        )
-        prev_week_df = load_local_schedule(prev_year, prev_week)
-
-        updated_sch = auto_generate_pattern_weekly_schedule(
-            st.session_state["schedule_df"],
-            day_headers,
-            expected_routes_dict,
-            drivers_df=drivers_df,
-            target_shifts_per_driver=4,
-            min_shifts_per_driver=2,
-            prev_week_schedule_df=prev_week_df,
-            max_consecutive_days=int(max_consec_days),
-            clear_existing_non_pto=clear_existing_auto,
-            standing_rules_dict=st.session_state.get(
-                "standing_schedules_dict", {}
-            ),
-        )
-
-        st.session_state["schedule_df"] = updated_sch.copy()
-        log_dispatch_action(
-            f"Ran two-pass auto-scheduler with standing locks for {week_label}.",
-            username=active_user,
-        )
-        st.success(
-            "Successfully generated weekly schedule with standing locks, 2-shift"
-            " minimum guarantee, and +15% buffer!"
-        )
-        st.rerun()
-
-    # ==========================================
-    # BULK MULTI-DRIVER SHIFT ASSIGNMENT TOOL
-    # ==========================================
-    with st.expander("⚡ Bulk Assign Shifts to Multiple Drivers", expanded=False):
-      st.caption(
-          "Select multiple drivers below, pick the target day(s) and shift"
-          " type, then click apply."
-      )
-
-      all_schedule_drivers = (
-          st.session_state["schedule_df"]["Driver Name"]
-          .dropna()
-          .unique()
-          .tolist()
-          if "schedule_df" in st.session_state
-          and not st.session_state["schedule_df"].empty
-          else []
-      )
-
-      bulk_sel_drivers = st.multiselect(
-          "Select Drivers",
-          options=all_schedule_drivers,
-          key="bulk_drivers_sel",
-      )
-
-      b_col1, b_col2 = st.columns(2)
-      with b_col1:
-        bulk_sel_days = st.multiselect(
-            "Select Days",
-            options=day_headers,
-            default=day_headers,
-            key="bulk_days_sel",
-        )
-      with b_col2:
-        bulk_sel_shift = st.selectbox(
-            "Assign Shift Type",
-            options=[
-                "",
-                "Driver",
-                "Helper",
-                "On-Call",
-                "Off",
-                "OPS-AM",
-                "OPS-PM",
-                "Rqst Off",
-            ],
-            key="bulk_shift_sel",
-        )
-
-      if st.button(
-          "🚀 Apply Bulk Shift Assignment",
-          type="primary",
-          key="btn_apply_bulk",
-      ):
-        if not bulk_sel_drivers:
-          st.warning("Please select at least one driver.")
-        elif not bulk_sel_days:
-          st.warning("Please select at least one day.")
-        else:
-          sch_df_ref = st.session_state["schedule_df"]
-          for idx, row in sch_df_ref.iterrows():
-            d_name = str(row.get("Driver Name", "")).strip()
-            if d_name in bulk_sel_drivers:
-              for d_day in bulk_sel_days:
-                if d_day in sch_df_ref.columns:
-                  sch_df_ref.at[idx, d_day] = bulk_sel_shift
-
-          st.session_state["schedule_df"] = sch_df_ref.copy()
-          log_dispatch_action(
-              f"Bulk assigned shift '{bulk_sel_shift}' for"
-              f" {len(bulk_sel_drivers)} drivers across {len(bulk_sel_days)}"
-              " days.",
-              username=active_user,
-          )
-          st.success(
-              f"Successfully updated shifts for {len(bulk_sel_drivers)}"
-              " drivers!"
-          )
-          st.rerun()
-
-    df_display = st.session_state["schedule_df"].copy()
-    df_display["Total Days"] = (
-        df_display[existing_day_cols].isin(work_shifts).sum(axis=1)
-    )
-
-    standing_keys_set = set(
-        st.session_state.get("standing_schedules_dict", {}).keys()
-    )
-
-    def _format_row_status(row):
-      dn_low = str(row.get("Driver Name", "")).strip().lower()
-      tot = int(row.get("Total Days", 0))
-      if tot > 4:
-        return f"⚠️ OT ({tot*10}h)"
-      if dn_low in standing_keys_set:
-        return "📌 Fixed"
-      return "✅ Reg"
-
-    df_display["OT Status"] = df_display.apply(_format_row_status, axis=1)
-
-    if schedule_view_filter == "Show Scheduled Only (Drivers/Helpers/OPS)":
-      df_display = df_display[df_display["Total Days"] > 0]
-    elif schedule_view_filter == "Show Available / Unscheduled Only":
-      df_display = df_display[df_display["Total Days"] == 0]
-    elif schedule_view_filter == "Show Fixed / Standing Schedule Only":
-      df_display = df_display[
-          df_display["Driver Name"]
-          .astype(str)
-          .str.strip()
-          .str.lower()
-          .isin(standing_keys_set)
-      ]
-    elif schedule_view_filter == "Show Over 4 Shifts (OT Risk)":
-      df_display = df_display[df_display["Total Days"] > 4]
-    elif schedule_view_filter == "Show with Calendar Notes / Requests":
-      df_display = df_display[
-          df_display["Notes / Requests"].astype(str).str.strip() != ""
-      ]
-
-    st.session_state["visible_schedule_indices"] = df_display.index.tolist()
-
-    display_cols = ["Driver Name"] + existing_day_cols
-    if (
-        day_quick_focus != "None (Show All Days)"
-        and day_quick_focus in existing_day_cols
-    ):
-      display_cols = ["Driver Name", day_quick_focus] + [
-          c for c in existing_day_cols if c != day_quick_focus
-      ]
-
-    display_cols.extend(["Total Days", "OT Status"])
-    if "Notes / Requests" in df_display.columns:
-      display_cols.append("Notes / Requests")
-
-    df_display = df_display[display_cols]
-
-    st.caption(
-        "Assign shift options. Leave cells blank if available but not"
-        " scheduled. Standing schedules auto-populate with 📌 Fixed status."
-    )
-
-    shift_options = [
-        "",
-        "Driver",
-        "Helper",
-        "On-Call",
-        "Off",
-        "OPS-AM",
-        "OPS-PM",
-        "Rqst Off",
-    ]
-
-    sch_config = {
-        "Driver Name": st.column_config.TextColumn(
-            "Driver Name", disabled=True
-        ),
-        "Total Days": st.column_config.NumberColumn(
-            "Total Days", disabled=True, format="%d days"
-        ),
-        "OT Status": st.column_config.TextColumn("Status", disabled=True),
-        "Notes / Requests": st.column_config.TextColumn(
-            "Notes / Requests",
-            help="Synced automatically from Long-Range Calendar.",
-        ),
-    }
-    for dh in day_headers:
-      if dh in display_cols:
-        sch_config[dh] = st.column_config.SelectboxColumn(
-            dh, options=shift_options, required=False
-        )
-
-    editor_height = min(max(350, len(df_display) * 38 + 50), 750)
-    st.data_editor(
-        df_display,
-        column_config=sch_config,
-        use_container_width=True,
-        num_rows="fixed",
-        hide_index=True,
-        height=editor_height,
-        key="weekly_schedule_editor_state",
-        on_change=on_schedule_change,
-    )
-
-    c_s1, c_s2 = st.columns(2)
-    with c_s1:
-      if st.button("💾 Save Weekly Schedule to Cloud Storage", type="primary"):
-        save_weekly_schedule_to_storage(
-            st.session_state["schedule_df"],
-            year=int(sel_year),
-            week_num=int(sel_amazon_week),
-        )
-        log_dispatch_action(
-            f"Saved weekly schedule ({week_label}) to Cloud Storage.",
-            username=active_user,
-        )
-        st.success(f"Saved {week_label} permanently to Cloud Storage!")
-
-    st.markdown("---")
-
-    st.subheader("📢 Discord Announcement Broadcast (#weekly-schedule)")
-    discord_text = generate_discord_schedule(
-        st.session_state["schedule_df"], week_str=week_label
-    )
-
-    with st.expander(
-        "🚀 Post Schedule Directly to Discord Channel", expanded=True
-    ):
-      st.code(discord_text, language="text")
-      webhook_input = st.text_input(
-          "Discord Webhook URL",
-          value=DISCORD_WEBHOOK_URL,
-          type="password",
-          key="disc_webhook_weekly",
-      )
-      if st.button(
-          "Broadcast Schedule to Discord Channel",
-          type="primary",
-          key="btn_disc_weekly",
-      ):
-        if webhook_input.strip():
-          success, msg = send_discord_webhook(
-              webhook_input.strip(), discord_text
-          )
-          if success:
-            log_dispatch_action(
-                f"Broadcast weekly schedule to Discord ({week_label}).",
-                username=active_user,
-            )
-            st.success(msg)
-          else:
-            st.error(msg)
-        else:
-          st.warning("Please provide a valid Discord Webhook URL.")
-
-  # ==========================================
-  # TAB 2: LONG-RANGE PTO & AVAILABILITY CALENDAR
-  # ==========================================
-  with tab_pto:
-    st.markdown("### 🌴 Long-Range Driver PTO & Requests Tracker")
-    st.caption(
-        "Log upcoming driver time-off, doctor appointments, or availability"
-        " blocks well in advance to prevent weekly scheduling errors."
-    )
-
-    with st.form("pto_entry_form", clear_on_submit=True):
-      st.markdown("#### Log New Request")
-      f_col1, f_col2, f_col3, f_col4 = st.columns(4)
-
-      driver_names = []
-      if drivers_df is not None and "Driver Name" in drivers_df.columns:
-        driver_names = sorted(
-            drivers_df["Driver Name"].dropna().unique().tolist()
-        )
-      elif (
-          "schedule_df" in st.session_state
-          and not st.session_state["schedule_df"].empty
-      ):
-        sch_ref = st.session_state["schedule_df"]
-        if "Driver Name" in sch_ref.columns:
-          driver_names = sorted(sch_ref["Driver Name"].unique().tolist())
-        elif "First Name" in sch_ref.columns and "Last Name" in sch_ref.columns:
-          driver_names = sorted(
-              (sch_ref["First Name"] + " " + sch_ref["Last Name"])
-              .unique()
-              .tolist()
-          )
-      else:
-        driver_names = ["Manual Entry Required"]
-
-      with f_col1:
-        sel_driver = st.selectbox("Driver Name", options=driver_names)
-      with f_col2:
-        start_p_date = st.date_input(
-            "Start Date", value=datetime.today(), key="pto_start_input"
-        )
-      with f_col3:
-        end_p_date = st.date_input(
-            "End Date", value=datetime.today(), key="pto_end_input"
-        )
-      with f_col4:
-        category = st.selectbox(
-            "Category",
-            options=[
-                "Approved PTO",
-                "Unpaid Leave",
-                "Appointment / Partial Off",
-                "No Sundays",
-                "Other Constraint",
-            ],
-        )
-
-      reason_notes = st.text_input(
-          "Reason / Notes (e.g., Family vacation, Doctor visit)"
-      )
-
-      submitted_pto = st.form_submit_button(
-          "➕ Add to Long-Range Calendar", type="primary"
-      )
-      if submitted_pto:
-        new_row = {
-            "Driver Name": str(sel_driver).strip(),
-            "Start Date": start_p_date.strftime("%Y-%m-%d"),
-            "End Date": end_p_date.strftime("%Y-%m-%d"),
-            "Category": str(category),
-            "Reason / Notes": str(reason_notes),
-        }
-        st.session_state["pto_df"] = pd.concat(
-            [st.session_state["pto_df"], pd.DataFrame([new_row])],
-            ignore_index=True,
-        )
-
-        save_long_range_pto_storage(st.session_state["pto_df"])
-
-        if "schedule_df" in st.session_state:
-          del st.session_state["schedule_df"]
-        if "loaded_week_key" in st.session_state:
-          del st.session_state["loaded_week_key"]
-
-        log_dispatch_action(
-            f"Added long-range PTO request for {sel_driver} ({start_p_date} to"
-            f" {end_p_date}).",
-            username=active_user,
-        )
-        st.success(
-            f"Successfully recorded PTO request for {sel_driver}! Saved to"
-            " Cloud Storage and synchronized."
-        )
-        st.rerun()
-
-    st.markdown("---")
-    st.markdown("### 📋 Active Requests Log")
-
-    def on_pto_change():
-      changes = st.session_state.get("pto_editor_state")
-      if changes and "pto_df" in st.session_state:
-        for row_idx, col_changes in changes.get("edited_rows", {}).items():
-          for col_name, new_val in col_changes.items():
-            st.session_state["pto_df"].at[row_idx, col_name] = str(new_val)
-
-    pto_config = {
-        "Driver Name": st.column_config.TextColumn("Driver Name"),
-        "Start Date": st.column_config.TextColumn("Start Date"),
-        "End Date": st.column_config.TextColumn("End Date"),
-        "Category": st.column_config.SelectboxColumn(
-            "Category",
-            options=[
-                "Approved PTO",
-                "Unpaid Leave",
-                "Appointment / Partial Off",
-                "No Sundays",
-                "Other Constraint",
-            ],
-            required=True,
-        ),
-        "Reason / Notes": st.column_config.TextColumn("Reason / Notes"),
-    }
-
-    edited_pto_df = st.data_editor(
-        st.session_state["pto_df"],
-        column_config=pto_config,
-        use_container_width=True,
-        num_rows="dynamic",
-        hide_index=True,
-        key="pto_editor_state",
-        on_change=on_pto_change,
-    )
-
-    c_p1, c_p2 = st.columns(2)
-    with c_p1:
-      if st.button(
-          "💾 Save Long-Range Calendar to Cloud Storage",
-          type="primary",
-          key="save_pto_disk",
-      ):
-        save_long_range_pto_storage(edited_pto_df)
-        st.session_state["pto_df"] = load_long_range_pto_storage()
-
-        if "schedule_df" in st.session_state:
-          del st.session_state["schedule_df"]
-        if "loaded_week_key" in st.session_state:
-          del st.session_state["loaded_week_key"]
-
-        log_dispatch_action(
-            "Updated long-range PTO calendar database in Cloud Storage.",
-            username=active_user,
-        )
-        st.success(
-            "Long-range calendar saved to Cloud Storage and weekly schedule"
-            " synchronized!"
-        )
-        st.rerun()
+                del_rule_key = st.selectbox(
+                    "Remove Standing Rule",
+                    options=["Select..."] + [r["_key"] for r in rules_list],
+                    format_func=lambda k: standing_rules[k].get("display_name", k) if k in standing_rules else k,
+                )
+                if del_rule_key != "Select..." and st.button("🗑️ Delete Selected Rule"):
+                    standing_rules.pop(del_rule_key, None)
+                    save_standing_schedules_storage(standing_rules)
+                    st.toast("Standing rule removed.", icon="🗑️")
+                    st.rerun()
