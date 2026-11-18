@@ -727,4 +727,54 @@ def save_driver_incident(
       "Date": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M"),
       "Driver Name": str(driver_name).strip(),
       "Severity": str(severity).strip(),
-      "Category": str(category).
+      "Category": str(category).strip(),
+      "Infraction / Detail": str(infraction_detail).strip(),
+      "Van Bumper": str(van_bumper).strip(),
+      "Logged By": str(logged_by).strip(),
+      "Notes": str(notes).strip(),
+  }
+  updated_df = pd.concat(
+      [incidents_df, pd.DataFrame([new_record])], ignore_index=True
+  )
+  safe_save_dataframe(updated_df, INCIDENTS_LOG_PATH)
+  load_local_incidents_log.clear()
+  return updated_df
+
+
+def update_driver_incident(
+    row_idx,
+    driver_name,
+    severity,
+    category,
+    infraction_detail,
+    van_bumper,
+    logged_by,
+    notes,
+):
+  """Updates an existing incident log entry."""
+  incidents_df = load_local_incidents_log()
+  if incidents_df is not None and not incidents_df.empty and 0 <= row_idx < len(incidents_df):
+    for col in incidents_df.columns:
+      incidents_df[col] = incidents_df[col].astype(object)
+
+    incidents_df.loc[row_idx, "Driver Name"] = str(driver_name).strip()
+    incidents_df.loc[row_idx, "Severity"] = str(severity).strip()
+    incidents_df.loc[row_idx, "Category"] = str(category).strip()
+    incidents_df.loc[row_idx, "Infraction / Detail"] = str(infraction_detail).strip()
+    incidents_df.loc[row_idx, "Van Bumper"] = str(van_bumper).strip()
+    incidents_df.loc[row_idx, "Logged By"] = str(logged_by).strip()
+    incidents_df.loc[row_idx, "Notes"] = str(notes).strip()
+    
+    safe_save_dataframe(incidents_df, INCIDENTS_LOG_PATH)
+    load_local_incidents_log.clear()
+  return incidents_df
+
+
+def delete_driver_incident(row_idx):
+  """Deletes an incident log entry by row index."""
+  incidents_df = load_local_incidents_log()
+  if incidents_df is not None and not incidents_df.empty and 0 <= row_idx < len(incidents_df):
+    incidents_df = incidents_df.drop(index=row_idx).reset_index(drop=True)
+    safe_save_dataframe(incidents_df, INCIDENTS_LOG_PATH, allow_empty=True)
+    load_local_incidents_log.clear()
+  return incidents_df
