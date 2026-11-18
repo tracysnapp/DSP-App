@@ -25,7 +25,7 @@ SHIFT_OPTIONS = ["", "Driver", "Helper", "OPS-AM", "OPS-PM", "On-Call", "Off", "
 DAY_PREFIXES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
 
 
-def get_current_amazon_week_info(ref_date: datetime.date = None):
+def _get_amazon_week_details(ref_date: datetime.date = None):
     """Calculates Amazon Sunday-Saturday week year, week number, date list, headers, and range label."""
     if ref_date is None:
         ref_date = datetime.date.today()
@@ -58,6 +58,12 @@ def get_current_amazon_week_info(ref_date: datetime.date = None):
     day_headers = [d.strftime("%a %d %b") for d in day_dates]
     range_str = f"{week_start.strftime('%d-%b')} to {week_end.strftime('%d-%b')}"
     return amazon_year, week_num, day_dates, day_headers, range_str
+
+
+def get_current_amazon_week_info(ref_date: datetime.date = None):
+    """Returns (amazon_year, week_num) for external callers such as dispatch_roster.py."""
+    amazon_year, week_num, _, _, _ = _get_amazon_week_details(ref_date)
+    return amazon_year, week_num
 
 
 def render_scheduler_tab():
@@ -108,7 +114,7 @@ def render_scheduler_tab():
                 st.session_state["sched_anchor_date"] += datetime.timedelta(days=7)
                 st.rerun()
 
-        yr, wk_num, day_dates, day_headers, range_str = get_current_amazon_week_info(
+        yr, wk_num, day_dates, day_headers, range_str = _get_amazon_week_details(
             st.session_state["sched_anchor_date"]
         )
         week_key = f"{yr}_W{wk_num:02d}"
@@ -231,7 +237,7 @@ def render_scheduler_tab():
         with act1:
             if st.button("⚡ Auto-Fill Schedule", use_container_width=True):
                 prev_date = st.session_state["sched_anchor_date"] - datetime.timedelta(days=7)
-                p_yr, p_wk, _, _, _ = get_current_amazon_week_info(prev_date)
+                p_yr, p_wk, _, _, _ = _get_amazon_week_details(prev_date)
                 prev_df = load_local_schedule(year=p_yr, week_num=p_wk)
 
                 auto_df = auto_generate_pattern_weekly_schedule(
