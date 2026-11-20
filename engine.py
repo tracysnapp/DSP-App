@@ -423,6 +423,71 @@ def update_van_last_driven(van_bumper, activity_date=None):
                 st.session_state["fleet_df"] = load_local_fleet()
 
 
+def update_vans_last_driven_bulk(van_bumpers, activity_date=None):
+    """Updates 'Last Driven' for a list of van bumpers in a single GCS read/write."""
+    if not van_bumpers:
+        return
+
+    clean_bumpers = set()
+    for v in van_bumpers:
+        if v is None:
+            continue
+        s = str(v).strip().upper()
+        if s.endswith(".0"):
+            s = s[:-2]
+        if s and s not in ["NAN", "NONE", "", "UNASSIGNED", "N/A"]:
+            clean_bumpers.add(s)
+
+    if not clean_bumpers:
+        return
+
+    if activity_date is None:
+        activity_date = datetime.date.today().strftime("%Y-%m-%d")
+
+    fleet_df = load_dataframe_auto(MASTER_FLEET_PATH)
+    if fleet_df is None or fleet_df.empty:
+        return
+
+    bumper_col = next(
+        (
+            c
+            for c in fleet_df.columns
+            if "bumper" in c.lower() or "vehicle" in c.lower() or "name" in c.lower()
+        ),
+        fleet_df.columns[0],
+    )
+    date_col = next(
+        (
+            c
+            for c in fleet_df.columns
+            if "driven" in c.lower() or "date" in c.lower()
+        ),
+        None,
+    )
+
+    if not date_col:
+        date_col = "Last Driven"
+        fleet_df[date_col] = ""
+    else:
+        fleet_df[date_col] = fleet_df[date_col].astype(object)
+
+    norm_series = (
+        fleet_df[bumper_col]
+        .astype(str)
+        .str.strip()
+        .str.upper()
+        .str.replace(r"\.0$", "", regex=True)
+    )
+    mask = norm_series.isin(clean_bumpers)
+    if mask.any():
+        fleet_df.loc[mask, date_col] = activity_date
+        safe_save_dataframe(fleet_df, MASTER_FLEET_PATH)
+        load_local_fleet.clear()
+        get_van_last_driven_dict.clear()
+        if "fleet_df" in st.session_state:
+            st.session_state["fleet_df"] = load_local_fleet()
+
+
 def process_access_data(access_df):
     if access_df is None or access_df.empty:
         return pd.DataFrame(columns=["Location", "Code", "Special Instructions"])
