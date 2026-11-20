@@ -1,7 +1,12 @@
+import datetime
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
-from engine import log_dispatch_action, save_daily_closing_checklist
+from engine import (
+    log_dispatch_action,
+    save_daily_closing_checklist,
+    update_vans_last_driven_bulk,
+)
 from modules.roster import generate_printable_closing_html
 
 CLOSING_COLUMNS = [
@@ -23,19 +28,25 @@ CLOSING_COLUMNS = [
 
 
 def render_closing_checklist_tab():
-    hdr_left, hdr_right = st.columns([3, 1])
+    hdr_left, hdr_mid, hdr_right = st.columns([2.2, 1, 1.5])
     with hdr_left:
         st.subheader("📝 End-of-Day Driver Closing & Debrief Checklist")
         st.caption(
-            "Auto-populated from today's active Dispatch Roster. Track van returns, equipment check-in, and debrief remarks."
+            "Verify final van assignments, equipment check-in, and remarks. Certifying saves the log, updates Master Fleet Last Driven dates, and generates the printable debrief sheet."
+        )
+    with hdr_mid:
+        cert_date = st.date_input(
+            "Service Date",
+            value=datetime.date.today(),
+            key="closing_certify_date",
         )
     with hdr_right:
-        st.markdown("<div style='padding-top: 0.4rem;'></div>", unsafe_allow_html=True)
-        save_top_clicked = st.button(
-            "💾 Save Debrief Log",
+        st.markdown("<div style='padding-top: 1.65rem;'></div>", unsafe_allow_html=True)
+        certify_clicked = st.button(
+            "✅ Certify, Save, and Print Closing Checklist",
             type="primary",
             use_container_width=True,
-            key="save_closing_top_btn",
+            key="certify_closing_top_btn",
         )
 
     closing_df = st.session_state.get("closing_df")
@@ -135,21 +146,50 @@ def render_closing_checklist_tab():
         key="closing_checklist_editor",
     )
 
-    if save_top_clicked:
+    if certify_clicked:
         cleaned_save = edited_closing.fillna("").astype(str)
         st.session_state["closing_df"] = cleaned_save
         save_daily_closing_checklist(cleaned_save)
+
+        date_str = cert_date.strftime("%Y-%m-%d")
+        vans_driven = (
+            cleaned_save["Van"].dropna().astype(str).str.strip().tolist()
+            if "Van" in cleaned_save.columns
+            else []
+        )
+        update_vans_last_driven_bulk(vans_driven, activity_date=date_str)
+
+        valid_van_cnt = len(
+            {
+                v.upper()
+                for v in vans_driven
+                if v and v.upper() not in ["NAN", "NONE", "", "UNASSIGNED", "N/A"]
+            }
+        )
+        st.session_state["closing_certified_html"] = generate_printable_closing_html(
+            cleaned_save
+        )
+        st.session_state["closing_certified_label"] = (
+            f"{date_str} ({valid_van_cnt} vans stamped)"
+        )
+
         log_dispatch_action(
-            "Updated and saved End-of-Day Closing Checklist.",
+            f"Certified Closing Checklist for {date_str} and updated Last Driven on {valid_van_cnt} vans.",
             username=st.session_state.get("user_name"),
         )
-        st.toast("Closing checklist saved to Cloud Storage!", icon="💾")
+        st.toast(
+            f"Checklist certified! Updated Last Driven ({date_str}) for {valid_van_cnt} vans.",
+            icon="✅",
+        )
         st.rerun()
 
-    st.markdown("---")
-    with st.expander("🖨️ Printable Landscape Debrief Sheet (Clipboard Ready)", expanded=False):
-        st.caption(
-            "Generates a clean landscape print sheet with blank check-in boxes and wide signature fields."
+    if st.session_state.get("closing_certified_html"):
+        st.markdown("---")
+        st.success(
+            f"✅ **Certified Closing Checklist Ready to Print** — `{st.session_state.get('closing_certified_label', '')}`"
         )
-        printable_html = generate_printable_closing_html(edited_closing)
-        components.html(printable_html, height=520, scrolling=True)
+        components.html(
+            st.session_state["closing_certified_html"],
+            height=540,
+            scrolling=True,
+        )
